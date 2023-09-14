@@ -40,7 +40,7 @@
       videoDrivers = [ "qxl" ];
       enable = true;
 
-      # desktopManager.xterm.enable = false;
+      desktopManager.xterm.enable = true;
       # displayManager.autoLogin.enable = true;
       # displayManager.autoLogin.user = "bunnuafeth";
       # windowManager.bunnuafeth.enable = true;

@@ -10,40 +10,26 @@ QEMU_OPTS="
   -device virtserialport,chardev=spicechannel0,name=com.redhat.spice.0
 "
 
-left-vm () {
+bu-vm () {
   
   if [ "$1" = "clean" ]; then 
 
     rm -rf "${SCRIPTPATH}/result"
-    rm "${SCRIPTPATH}/leftwm.qcow2"
-    
+    rm "${SCRIPTPATH}/bunnuafeth.qcow2"
+
   else
 
-    echo building a leftwm virtual machine...
-    cd "$SCRIPTPATH" # nixos-rebuild build-vm dumps result into current directory
+  echo building a bunnuafeth virtual machine...
 
-    nixos-rebuild build-vm --flake ../#leftwm -L
+  nix build .#nixosConfigurations.bunnuafeth.config.system.build.vm -o "${SCRIPTPATH}/result"
 
-    if [ $? -ne 0 ]; then
-      exit $?
-    fi
+  QEMU_OPTS=$QEMU_OPTS $SCRIPTPATH/result/bin/run-bunnuafeth-vm & 
+  PID_QEMU="$!"
 
-    export QEMU_OPTS="
-      -spice unix=on,addr=/tmp/vm_spice.socket,disable-ticketing=on
-      -vga none
-      -device qxl-vga,vgamem_mb=64,ram_size_mb=256,vram_size_mb=128,max_outputs=2
-      -display none
-      -chardev spicevmc,id=charchannel0,name=vdagent
-      -device virtio-serial-pci,id=virtio-serial0
-      -device virtserialport,bus=virtio-serial0.0,nr=1,chardev=charchannel0,id=channel0,name=com.redhat.spice.0
-    "
-    ./result/bin/run-leftwm-vm & PID_QEMU="$!"
-    sleep 1
-    remote-viewer spice+unix:///tmp/vm_spice.socket
-    kill $PID_QEMU
-    cd -
+  sleep 1
+  remote-viewer spice+unix:///tmp/vm_spice.socket
+  kill $PID_QEMU
 
   fi
 
 }
-

@@ -41,7 +41,7 @@
             ];
 
             inherit GIT_HASH;
-          } // (craneLib.crateNameFromCargoToml { cargoToml = ./bunnuafeth/Cargo.toml; });
+          } // (craneLib.crateNameFromCargoToml { cargoToml = ./Cargo.toml; });
 
           craneLib = (crane.mkLib pkgs).overrideToolchain pkgs.rust-bin.stable.latest.minimal;
 
@@ -53,9 +53,7 @@
             inherit cargoArtifacts;
 
             postFixup = ''
-              for p in $out/bin/left*; do
-                patchelf --set-rpath "${pkgs.lib.makeLibraryPath commonArgs.buildInputs}" $p
-              done
+                patchelf --set-rpath "${pkgs.lib.makeLibraryPath commonArgs.buildInputs}" $out/bin/bunnuafeth
             '';
 
             NIX_CFLAGS_LINK = "-fuse-ld=mold";
