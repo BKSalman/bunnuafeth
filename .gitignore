@@ -1,3 +1,4 @@
 /target
 .nixos-vm/result
 .nixos-vm/bunnuafeth.qcow2
+.direnv

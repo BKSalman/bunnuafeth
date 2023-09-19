@@ -11,7 +11,6 @@ QEMU_OPTS="
 "
 
 bu-vm () {
-  
   if [ "$1" = "clean" ]; then 
 
     rm -rf "${SCRIPTPATH}/result"
@@ -23,6 +22,10 @@ bu-vm () {
 
   nix build .#nixosConfigurations.bunnuafeth.config.system.build.vm -o "${SCRIPTPATH}/result"
 
+  if [ $? -ne 0 ]; then
+    exit $?
+  fi
+
   QEMU_OPTS=$QEMU_OPTS $SCRIPTPATH/result/bin/run-bunnuafeth-vm & 
   PID_QEMU="$!"
 
@@ -31,5 +34,4 @@ bu-vm () {
   kill $PID_QEMU
 
   fi
-
 }

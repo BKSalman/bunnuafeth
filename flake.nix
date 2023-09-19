@@ -36,6 +36,7 @@
               mold
               clang
               xorg.libX11
+              xorg.libXft
               xorg.libXrandr
               xorg.libXinerama
             ];
@@ -73,8 +74,6 @@
               NIX_CFLAGS_LINK = "-fuse-ld=mold";
 
               buildInputs = with pkgs;[
-                mold
-                clang
                 pkg-config
                 systemd
               ] ++ commonArgs.buildInputs;
@@ -94,7 +93,7 @@
               ];
 
               shellHook = ''
-                source ./.nixos-vm/vm.sh
+                source .nixos-vm/vm.sh
               '';
 
               inherit GIT_HASH;

@@ -1,5 +1,9 @@
 { config, pkgs, ... }:
 {
+  imports = [
+    ./bunnuafeth.nix
+  ];
+
   system.stateVersion = "23.05";
   boot.initrd.availableKernelModules = [ "virtio_net" "virtio_pci" "virtio_mmio" "virtio_blk" "virtio_scsi" "9p" "9pnet_virtio" ];
   boot.initrd.kernelModules = [ "virtio_balloon" "virtio_console" "virtio_rng" ];
@@ -19,7 +23,7 @@
   };
 
   environment.systemPackages = with pkgs; [
-    bunnuafeth
+    btop
     alacritty
     polybar
     lshw
@@ -41,9 +45,9 @@
       enable = true;
 
       desktopManager.xterm.enable = true;
-      # displayManager.autoLogin.enable = true;
-      # displayManager.autoLogin.user = "bunnuafeth";
-      # windowManager.bunnuafeth.enable = true;
+      displayManager.autoLogin.enable = true;
+      displayManager.autoLogin.user = "bunnuafeth";
+      windowManager.bunnuafeth.enable = true;
     };
   };
 
