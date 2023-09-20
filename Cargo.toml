@@ -5,5 +5,13 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "bunnu"
+path = "src/main.rs"
+
 [dependencies]
+thiserror = "1.0.48"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 x11-dl = "2.21.0"
+x11rb = { version = "0.12.0", features = ["xinerama", "randr", "dri2", "cursor", "xkb", "xinput", "glx", "all-extensions"] }

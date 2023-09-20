@@ -73,22 +73,18 @@
             {
               NIX_CFLAGS_LINK = "-fuse-ld=mold";
 
+              packages = with pkgs; [
+                (rust-bin.stable.latest.default.override {
+                  extensions = [ "rust-src" "rust-analyzer" ];
+                })
+              ];
+
               buildInputs = with pkgs;[
                 pkg-config
                 systemd
               ] ++ commonArgs.buildInputs;
+
               nativeBuildInputs = with pkgs; [
-                gnumake
-                (rust-bin.stable.latest.default.override {
-                  extensions = [
-                    "cargo"
-                    "clippy"
-                    "rust-src"
-                    "rust-analyzer"
-                    "rustc"
-                    "rustfmt"
-                  ];
-                })
                 virt-viewer
               ];
 
@@ -97,6 +93,8 @@
               '';
 
               inherit GIT_HASH;
+
+              LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath [ pkgs.xorg.libX11 pkgs.xorg.libXcursor pkgs.xorg.libXrandr pkgs.xorg.libXi pkgs.xorg.libXft ]}";
             };
         };
 
