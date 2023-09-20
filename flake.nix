@@ -54,7 +54,7 @@
             inherit cargoArtifacts;
 
             postFixup = ''
-                patchelf --set-rpath "${pkgs.lib.makeLibraryPath commonArgs.buildInputs}" $out/bin/bunnuafeth
+                patchelf --set-rpath "${pkgs.lib.makeLibraryPath commonArgs.buildInputs}" $out/bin/bunnu
             '';
 
             NIX_CFLAGS_LINK = "-fuse-ld=mold";
@@ -77,6 +77,8 @@
                 (rust-bin.stable.latest.default.override {
                   extensions = [ "rust-src" "rust-analyzer" ];
                 })
+                cargo-watch
+                xcb-util-cursor
               ];
 
               buildInputs = with pkgs;[

@@ -1,4 +1,4 @@
-use bunnuafeth::{run, setup_wm_attrs, Monitor, WM};
+use bunnuafeth::{run, setup_wm_attrs, WM};
 use x11rb::connect;
 
 fn init_tracing() {
@@ -12,34 +12,31 @@ fn init_tracing() {
 
 fn main() {
     init_tracing();
-    tracing::info!("Creating Drawable");
+    tracing::info!("Connecting to x11 server");
     let (connection, screen_num) = connect(None).expect("connect to X11 server");
 
     let conn1 = std::sync::Arc::new(connection);
     let conn = &*conn1;
 
-    let drawable = WM::new(conn, screen_num).expect("create drawable");
+    let mut wm = WM::new(conn, screen_num).expect("create drawable");
 
-    tracing::info!("Loading fonts");
+    wm.create_bar().unwrap();
+    wm.bar.update_position(&wm).unwrap();
 
-    // drawable.load_font(&xft, "monospace");
+    wm.scan_windows().expect("scan windows");
 
-    tracing::info!("Updating geometry");
+    // Monitor::get_monitors(&wm)
+    //     .expect("get monitors")
+    //     .iter_mut()
+    //     .for_each(|monitor| {
+    //         ;
+    //         monitor
+    //             .bar
+    //             .update_position(&wm)
+    //             .expect("update bar position");
+    //     });
 
-    tracing::info!("Setting up root window and dummy window");
+    setup_wm_attrs(&wm).expect("setup window manager");
 
-    Monitor::get_monitors(&drawable)
-        .expect("get monitors")
-        .iter_mut()
-        .for_each(|monitor| {
-            monitor.update_bar(&drawable).expect("update bar");
-            monitor
-                .bar
-                .update_position(&drawable)
-                .expect("update bar position");
-        });
-
-    setup_wm_attrs(&drawable).expect("setup window manager");
-
-    run(&drawable.connection).expect("run window manager");
+    run(wm).expect("run window manager");
 }

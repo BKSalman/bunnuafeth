@@ -16,7 +16,7 @@ in
     services.xserver.windowManager.session = singleton {
       name = "bunnuafeth";
       start = ''
-        ${pkgs.bunnuafeth}/bin/bunnuafeth &
+        ${pkgs.bunnuafeth}/bin/bunnu &
         waitPID=$!
       '';
     };

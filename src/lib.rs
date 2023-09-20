@@ -1,40 +1,33 @@
 use std::{
     cmp::Reverse,
-    collections::BinaryHeap,
-    ffi::{c_char, c_int, c_long, c_uint, CString},
+    collections::{BinaryHeap, HashSet},
+    io::{BufRead, BufReader},
     marker::PhantomData,
-};
-use x11_dl::{
-    xft::XftFont,
-    xlib::{
-        self, ButtonPressMask, ExposureMask, ParentRelative, Window, XSetWindowAttributes, Xlib,
-    },
 };
 use x11rb::{
     connection::Connection,
-    cursor::Handle as CursorHandle,
     protocol::{
+        self,
         randr::{ConnectionExt as XrandrConnectionExt, NotifyMask},
         xproto::{
             AtomEnum, ChangeWindowAttributesAux, ConnectionExt as XlibConnectionExt, CoordMode,
-            CreateGCAux, CreateWindowAux, EventMask, Gcontext, GetGeometryReply, MapState, Point,
-            PropMode, SetMode, WindowClass,
+            CreateGCAux, CreateWindowAux, EventMask, ExposeEvent, FontDraw, Gcontext,
+            GetGeometryReply, MapRequestEvent, MapState, Point, PropMode, SetMode, Window,
+            WindowClass,
         },
-        ErrorKind,
+        ErrorKind, Event,
     },
-    rust_connection::{ReplyError, RustConnection},
+    rust_connection::ReplyError,
     wrapper::ConnectionExt as WrapperConnectionExt,
     COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME,
 };
 
-pub const ROOT_EVENT_MASK: c_long = xlib::SubstructureRedirectMask
-    | xlib::SubstructureNotifyMask
-    | xlib::ButtonPressMask
-    | xlib::PointerMotionMask
-    | xlib::StructureNotifyMask;
-pub const LEFT_PTR: c_uint = 68;
-pub const SIZING: c_uint = 120;
-pub const FLEUR: c_uint = 52;
+mod utils;
+
+pub const LEFT_PTR: u16 = 68;
+pub const SIZING: u16 = 120;
+pub const FLEUR: u16 = 52;
+pub const HAND: u16 = 60;
 pub const BAR_HEIGHT: u16 = 30;
 
 pub trait BunnuConnectionExt {
@@ -66,7 +59,6 @@ where
         border_width: u16,
         value_list: &CreateWindowAux,
     ) -> Result<(), XlibError> {
-        // (xlib.XCreateSimpleWindow)(drawable.display, drawable.root, 0, 0, 1, 1, 0, 0, 0);
         self.create_window(
             COPY_DEPTH_FROM_PARENT,
             win_id,
@@ -85,32 +77,17 @@ where
     }
 }
 
-pub struct WM<'a, C: Connection> {
-    pub connection: &'a C,
-    pub xlib: x11_dl::xlib::Xlib,
-    pub display: *mut x11_dl::xlib::Display,
-    pub cursors: Cursors,
-    pub fonts: Vec<Font>,
-    pub screen_num: usize,
-    pub windows: Vec<WindowState>,
-    pub black_gc: Gcontext,
-    pub sequences_to_ignore: BinaryHeap<Reverse<u16>>,
-}
-
+#[derive(Debug, Clone)]
 pub struct WindowState {
     x: i16,
     y: i16,
     width: u16,
-    window: x11rb::protocol::xproto::Window,
-    frame_window: x11rb::protocol::xproto::Window,
+    pub window: Window,
+    frame_window: Window,
 }
 
 impl WindowState {
-    fn new(
-        window: x11rb::protocol::xproto::Window,
-        frame_window: x11rb::protocol::xproto::Window,
-        geom: &GetGeometryReply,
-    ) -> WindowState {
+    fn new(window: Window, frame_window: Window, geom: &GetGeometryReply) -> WindowState {
         WindowState {
             window,
             frame_window,
@@ -123,6 +100,18 @@ impl WindowState {
     fn close_x_position(&self) -> i16 {
         std::cmp::max(0, self.width - BAR_HEIGHT) as _
     }
+}
+
+pub struct WM<'a, C: Connection> {
+    pub connection: &'a C,
+    pub cursors: Cursors,
+    pub fonts: Vec<Font>,
+    pub screen_num: usize,
+    pending_expose: HashSet<Window>,
+    pub windows: Vec<WindowState>,
+    pub black_gc: Gcontext,
+    pub sequences_to_ignore: BinaryHeap<Reverse<u16>>,
+    pub bar: Bar<'a, C>,
 }
 
 impl<'a, C: Connection> WM<'a, C> {
@@ -141,8 +130,10 @@ impl<'a, C: Connection> WM<'a, C> {
     //     }
     // }
 
-    pub fn draw_bar(&self, state: WindowState) -> Result<(), XlibError> {
+    pub fn draw_bar(&self, state: &WindowState) -> Result<(), XlibError> {
+        tracing::debug!("drawing bar");
         let close_x = state.close_x_position();
+
         self.connection.poly_line(
             CoordMode::ORIGIN,
             state.frame_window,
@@ -155,6 +146,7 @@ impl<'a, C: Connection> WM<'a, C> {
                 },
             ],
         )?;
+
         self.connection.poly_line(
             CoordMode::ORIGIN,
             state.frame_window,
@@ -170,6 +162,7 @@ impl<'a, C: Connection> WM<'a, C> {
                 },
             ],
         )?;
+
         let reply = self
             .connection
             .get_property(
@@ -181,9 +174,11 @@ impl<'a, C: Connection> WM<'a, C> {
                 std::u32::MAX,
             )?
             .reply()?;
+
+        tracing::debug!("drawing text: {}", String::from_utf8_lossy(&reply.value));
+
         self.connection
             .image_text8(state.frame_window, self.black_gc, 1, 10, &reply.value)?;
-
         Ok(())
     }
 
@@ -245,14 +240,20 @@ impl<'a, C: Connection> WM<'a, C> {
     //     Ok(0)
     // }
 
-    fn find_window_by_id(&self, win: x11rb::protocol::xproto::Window) -> Option<&WindowState> {
+    fn find_window_by_id(&self, win: Window) -> Option<&WindowState> {
         self.windows
             .iter()
             .find(|state| state.window == win || state.frame_window == win)
     }
 
+    fn find_window_by_id_mut(&mut self, win: Window) -> Option<&mut WindowState> {
+        self.windows
+            .iter_mut()
+            .find(|state| state.window == win || state.frame_window == win)
+    }
+
     /// Scan for already existing windows and manage them
-    fn scan_windows(&mut self) -> Result<(), XlibError> {
+    pub fn scan_windows(&mut self) -> Result<(), XlibError> {
         // Get the already existing top-level windows.
         let screen = &self.connection.setup().roots[self.screen_num];
         let tree_reply = self.connection.query_tree(screen.root)?.reply()?;
@@ -278,14 +279,13 @@ impl<'a, C: Connection> WM<'a, C> {
         Ok(())
     }
 
-    fn manage_window(
-        &mut self,
-        win: x11rb::protocol::xproto::Window,
-        geom: &GetGeometryReply,
-    ) -> Result<(), XlibError> {
-        println!("Managing window {:?}", win);
+    fn manage_window(&mut self, win: Window, geom: &GetGeometryReply) -> Result<(), XlibError> {
+        tracing::debug!("Managing window {:?}", win);
         let screen = &self.connection.setup().roots[self.screen_num];
-        assert!(self.find_window_by_id(win).is_none());
+        assert!(
+            self.find_window_by_id(win).is_none(),
+            "Unmanaged window should not exist already!"
+        );
 
         let frame_win = self.connection.generate_id()?;
         let win_aux = CreateWindowAux::new()
@@ -321,6 +321,8 @@ impl<'a, C: Connection> WM<'a, C> {
         self.connection.map_window(frame_win)?;
         self.connection.ungrab_server()?;
 
+        tracing::debug!("window geometry {geom:#?}");
+
         self.windows.push(WindowState::new(win, frame_win, geom));
 
         // Ignore all events caused by reparent_window(). All those events have the sequence number
@@ -331,17 +333,90 @@ impl<'a, C: Connection> WM<'a, C> {
             .push(Reverse(cookie.sequence_number() as u16));
         Ok(())
     }
+
+    fn handle_event(&mut self, event: Event) -> Result<(), XlibError> {
+        let mut should_ignore = false;
+        if let Some(seqno) = event.wire_sequence_number() {
+            // Check sequences_to_ignore and remove entries with old (=smaller) numbers.
+            while let Some(&Reverse(to_ignore)) = self.sequences_to_ignore.peek() {
+                // Sequence numbers can wrap around, so we cannot simply check for
+                // "to_ignore <= seqno". This is equivalent to "to_ignore - seqno <= 0", which is what we
+                // check instead. Since sequence numbers are unsigned, we need a trick: We decide
+                // that values from [MAX/2, MAX] count as "<= 0" and the rest doesn't.
+                if to_ignore.wrapping_sub(seqno) <= u16::max_value() / 2 {
+                    // If the two sequence numbers are equal, this event should be ignored.
+                    should_ignore = to_ignore == seqno;
+                    break;
+                }
+                self.sequences_to_ignore.pop();
+            }
+        }
+
+        if !matches!(event, Event::MotionNotify(_)) {
+            tracing::debug!("Got event {:?}", event);
+        }
+        if should_ignore {
+            tracing::debug!("  [ignored]");
+            return Ok(());
+        }
+        match event {
+            // protocol::Event::UnmapNotify(event) => self.handle_unmap_notify(event),
+            // protocol::Event::ConfigureRequest(event) => self.handle_configure_request(event)?,
+            Event::MapRequest(event) => {
+                tracing::debug!("map request");
+                self.handle_map_request(event)?
+            }
+            Event::Expose(event) => self.handle_expose(event),
+            // protocol::Event::EnterNotify(event) => self.handle_enter(event)?,
+            // protocol::Event::ButtonPress(event) => self.handle_button_press(event),
+            // protocol::Event::ButtonRelease(event) => self.handle_button_release(event)?,
+            // protocol::Event::MotionNotify(event) => self.handle_motion_notify(event)?,
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_expose(&mut self, event: ExposeEvent) {
+        self.pending_expose.insert(event.window);
+    }
+
+    fn handle_map_request(&mut self, event: MapRequestEvent) -> Result<(), XlibError> {
+        tracing::debug!("handle map request");
+        self.manage_window(
+            event.window,
+            &self.connection.get_geometry(event.window)?.reply()?,
+        )
+    }
+
+    fn refresh(&mut self) {
+        while let Some(&win) = self.pending_expose.iter().next() {
+            tracing::debug!("exposed window: {win}");
+            self.pending_expose.remove(&win);
+            if let Some(state) = self.find_window_by_id(win) {
+                if let Err(err) = self.draw_bar(state) {
+                    eprintln!(
+                        "Error while redrawing window {:x?}: {:?}",
+                        state.window, err
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub struct Font {
-    xfont: *mut XftFont,
+    xfont: x11rb::protocol::xproto::Font,
     height: i32,
 }
 
+type Cursor = u32;
+
 pub struct Cursors {
-    pub normal: xlib::Cursor,
-    pub resize: xlib::Cursor,
-    pub r#move: xlib::Cursor,
+    pub normal: Cursor,
+    pub resize: Cursor,
+    pub r#move: Cursor,
+    pub hand: Cursor,
 }
 
 x11rb::atom_manager! {
@@ -452,225 +527,74 @@ impl Atoms {
     }
 }
 
-#[derive(Clone, Debug)]
-#[allow(non_snake_case)]
-pub struct XAtoms {
-    pub WMProtocols: xlib::Atom,
-    pub WMDelete: xlib::Atom,
-    pub WMState: xlib::Atom,
-    pub WMClass: xlib::Atom,
-    pub WMTakeFocus: xlib::Atom,
-    pub NetActiveWindow: xlib::Atom,
-    pub NetSupported: xlib::Atom,
-    pub NetWMName: xlib::Atom,
-    pub NetWMState: xlib::Atom,
-    pub NetWMAction: xlib::Atom,
-    pub NetWMPid: xlib::Atom,
-
-    pub NetWMActionMove: xlib::Atom,
-    pub NetWMActionResize: xlib::Atom,
-    pub NetWMActionMinimize: xlib::Atom,
-    pub NetWMActionShade: xlib::Atom,
-    pub NetWMActionStick: xlib::Atom,
-    pub NetWMActionMaximizeHorz: xlib::Atom,
-    pub NetWMActionMaximizeVert: xlib::Atom,
-    pub NetWMActionFullscreen: xlib::Atom,
-    pub NetWMActionChangeDesktop: xlib::Atom,
-    pub NetWMActionClose: xlib::Atom,
-
-    pub NetWMStateModal: xlib::Atom,
-    pub NetWMStateSticky: xlib::Atom,
-    pub NetWMStateMaximizedVert: xlib::Atom,
-    pub NetWMStateMaximizedHorz: xlib::Atom,
-    pub NetWMStateShaded: xlib::Atom,
-    pub NetWMStateSkipTaskbar: xlib::Atom,
-    pub NetWMStateSkipPager: xlib::Atom,
-    pub NetWMStateHidden: xlib::Atom,
-    pub NetWMStateFullscreen: xlib::Atom,
-    pub NetWMStateAbove: xlib::Atom,
-    pub NetWMStateBelow: xlib::Atom,
-    pub NetWMStateDemandsAttention: xlib::Atom,
-
-    pub NetWMWindowType: xlib::Atom,
-    pub NetWMWindowTypeDesktop: xlib::Atom,
-    pub NetWMWindowTypeDock: xlib::Atom,
-    pub NetWMWindowTypeToolbar: xlib::Atom,
-    pub NetWMWindowTypeMenu: xlib::Atom,
-    pub NetWMWindowTypeUtility: xlib::Atom,
-    pub NetWMWindowTypeSplash: xlib::Atom,
-    pub NetWMWindowTypeDialog: xlib::Atom,
-
-    pub NetSupportingWmCheck: xlib::Atom,
-    pub NetClientList: xlib::Atom,
-    pub NetDesktopViewport: xlib::Atom,
-    pub NetNumberOfDesktops: xlib::Atom,
-    pub NetCurrentDesktop: xlib::Atom,
-    pub NetDesktopNames: xlib::Atom,
-    pub NetWMDesktop: xlib::Atom,
-    pub NetWMStrutPartial: xlib::Atom, // net version - Reserve Screen Space
-    pub NetWMStrut: xlib::Atom,        // old version
-
-    pub UTF8String: xlib::Atom,
-}
-
-impl XAtoms {
-    fn new(connection: &RustConnection) -> Self {
-        Self::from(connection)
-    }
-
-    fn net_supported(&self) -> Vec<xlib::Atom> {
-        vec![
-            self.NetActiveWindow,
-            self.NetSupported,
-            self.NetWMName,
-            self.NetWMState,
-            self.NetWMAction,
-            self.NetWMPid,
-            self.NetWMStateModal,
-            self.NetWMStateSticky,
-            self.NetWMStateMaximizedVert,
-            self.NetWMStateMaximizedHorz,
-            self.NetWMStateShaded,
-            self.NetWMStateSkipTaskbar,
-            self.NetWMStateSkipPager,
-            self.NetWMStateHidden,
-            self.NetWMStateFullscreen,
-            self.NetWMStateAbove,
-            self.NetWMStateBelow,
-            self.NetWMStateDemandsAttention,
-            self.NetWMActionMove,
-            self.NetWMActionResize,
-            self.NetWMActionMinimize,
-            self.NetWMActionShade,
-            self.NetWMActionStick,
-            self.NetWMActionMaximizeHorz,
-            self.NetWMActionMaximizeVert,
-            self.NetWMActionFullscreen,
-            self.NetWMActionChangeDesktop,
-            self.NetWMActionClose,
-            self.NetWMWindowType,
-            self.NetWMWindowTypeDesktop,
-            self.NetWMWindowTypeDock,
-            self.NetWMWindowTypeToolbar,
-            self.NetWMWindowTypeMenu,
-            self.NetWMWindowTypeUtility,
-            self.NetWMWindowTypeSplash,
-            self.NetWMWindowTypeDialog,
-            self.NetSupportingWmCheck,
-            self.NetClientList,
-            self.NetDesktopViewport,
-            self.NetNumberOfDesktops,
-            self.NetCurrentDesktop,
-            self.NetDesktopNames,
-            self.NetWMDesktop,
-            self.NetWMStrutPartial,
-            self.NetWMStrut,
-        ]
-    }
-}
-
-impl From<&RustConnection> for XAtoms {
-    fn from(connection: &RustConnection) -> Self {
-        let get_atom = |atom: &str| {
-            connection
-                .intern_atom(false, atom.as_bytes())
-                .expect("get atom")
-                .reply()
-                .unwrap()
-                .atom
-                .into()
-        };
-
-        Self {
-            WMProtocols: get_atom("WM_PROTOCOLS"),
-            WMDelete: get_atom("WM_DELETE_WINDOW"),
-            WMState: get_atom("WM_STATE"),
-            WMClass: get_atom("WM_CLASS"),
-            WMTakeFocus: get_atom("WM_TAKE_FOCUS"),
-            NetActiveWindow: get_atom("_NET_ACTIVE_WINDOW"),
-            NetSupported: get_atom("_NET_SUPPORTED"),
-            NetWMName: get_atom("_NET_WM_NAME"),
-            NetWMPid: get_atom("_NET_WM_PID"),
-
-            NetWMState: get_atom("_NET_WM_STATE"),
-            NetWMStateModal: get_atom("_NET_WM_STATE_MODAL"),
-            NetWMStateSticky: get_atom("_NET_WM_STATE_STICKY"),
-            NetWMStateMaximizedVert: get_atom("_NET_WM_STATE_MAXIMIZED_VERT"),
-            NetWMStateMaximizedHorz: get_atom("_NET_WM_STATE_MAXIMIZED_HORZ"),
-            NetWMStateShaded: get_atom("_NET_WM_STATE_SHADED"),
-            NetWMStateSkipTaskbar: get_atom("_NET_WM_STATE_SKIP_TASKBAR"),
-            NetWMStateSkipPager: get_atom("_NET_WM_STATE_SKIP_PAGER"),
-            NetWMStateHidden: get_atom("_NET_WM_STATE_HIDDEN"),
-            NetWMStateFullscreen: get_atom("_NET_WM_STATE_FULLSCREEN"),
-            NetWMStateAbove: get_atom("_NET_WM_STATE_ABOVE"),
-            NetWMStateBelow: get_atom("_NET_WM_STATE_BELOW"),
-            NetWMStateDemandsAttention: get_atom("_NET_WM_STATE_DEMANDS_ATTENTION"),
-
-            NetWMAction: get_atom("_NET_WM_ALLOWED_ACTIONS"),
-            NetWMActionMove: get_atom("_NET_WM_ACTION_MOVE"),
-            NetWMActionResize: get_atom("_NET_WM_ACTION_RESIZE"),
-            NetWMActionMinimize: get_atom("_NET_WM_ACTION_MINIMIZE"),
-            NetWMActionShade: get_atom("_NET_WM_ACTION_SHADE"),
-            NetWMActionStick: get_atom("_NET_WM_ACTION_STICK"),
-            NetWMActionMaximizeHorz: get_atom("_NET_WM_ACTION_MAXIMIZE_HORZ"),
-            NetWMActionMaximizeVert: get_atom("_NET_WM_ACTION_MAXIMIZE_VERT"),
-            NetWMActionFullscreen: get_atom("_NET_WM_ACTION_FULLSCREEN"),
-            NetWMActionChangeDesktop: get_atom("_NET_WM_ACTION_CHANGE_DESKTOP"),
-            NetWMActionClose: get_atom("_NET_WM_ACTION_CLOSE"),
-
-            NetWMWindowType: get_atom("_NET_WM_WINDOW_TYPE"),
-            NetWMWindowTypeDesktop: get_atom("_NET_WM_WINDOW_TYPE_DESKTOP"),
-            NetWMWindowTypeDock: get_atom("_NET_WM_WINDOW_TYPE_DOCK"),
-            NetWMWindowTypeToolbar: get_atom("_NET_WM_WINDOW_TYPE_TOOLBAR"),
-            NetWMWindowTypeMenu: get_atom("_NET_WM_WINDOW_TYPE_MENU"),
-            NetWMWindowTypeUtility: get_atom("_NET_WM_WINDOW_TYPE_UTILITY"),
-            NetWMWindowTypeSplash: get_atom("_NET_WM_WINDOW_TYPE_SPLASH"),
-            NetWMWindowTypeDialog: get_atom("_NET_WM_WINDOW_TYPE_DIALOG"),
-            NetSupportingWmCheck: get_atom("_NET_SUPPORTING_WM_CHECK"),
-
-            NetClientList: get_atom("_NET_CLIENT_LIST"),
-            NetDesktopViewport: get_atom("_NET_DESKTOP_VIEWPORT"),
-            NetNumberOfDesktops: get_atom("_NET_NUMBER_OF_DESKTOPS"),
-            NetCurrentDesktop: get_atom("_NET_CURRENT_DESKTOP"),
-            NetDesktopNames: get_atom("_NET_DESKTOP_NAMES"),
-            NetWMDesktop: get_atom("_NET_WM_DESKTOP"),
-            NetWMStrutPartial: get_atom("_NET_WM_DESKTOP"),
-            NetWMStrut: get_atom("_NET_WM_STRUT"),
-
-            UTF8String: get_atom("UTF8_STRING"),
-        }
-    }
-}
-
 impl<'a, C: Connection> WM<'a, C> {
     pub fn new(connection: &'a C, screen_num: usize) -> Result<WM<'a, C>, XlibError> {
-        tracing::info!("Opening Xlib");
-        let xlib = Xlib::open().expect("open xft");
-        // let xft = Xft::open().expect("open xft");
-
-        // SAFETY:
-        //   - passing NULL as the argument here is valid as documented here: https://man.archlinux.org/man/extra/libx11/XOpenDisplay.3.en
-        let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
-
+        tracing::info!("setting up bunnuafeth");
         let setup = connection.setup();
 
         let screen = &setup.roots[screen_num];
 
         let win_id = connection.generate_id()?;
 
-        // TODO: idk what to do with this
-
-        // let pixmap = connection.create_pixmap(
-        //     COPY_DEPTH_FROM_PARENT,
-        //     win_id,
-        //     screen.root,
-        //     screen.width_in_pixels,
-        //     screen.height_in_pixels,
-        // )?;
+        connection.create_pixmap(
+            screen.root_depth,
+            win_id,
+            screen.root,
+            screen.width_in_pixels,
+            screen.height_in_pixels,
+        )?;
 
         let black_gc = connection.generate_id()?;
         let font = connection.generate_id()?;
-        connection.open_font(font, b"9x15")?;
+
+        if let Err(e) = connection
+            .open_font(
+                font,
+                b"-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1",
+            )?
+            .check()
+        {
+            tracing::error!("failed to open font {e}");
+            println!("DIR  MIN  MAX EXIST DFLT PROP ASC DESC NAME");
+
+            for reply in connection.list_fonts_with_info(u16::max_value(), b"*")? {
+                let reply = reply?;
+
+                let dir = if reply.draw_direction == FontDraw::LEFT_TO_RIGHT {
+                    "-->"
+                } else if reply.draw_direction == FontDraw::RIGHT_TO_LEFT {
+                    "<--"
+                } else {
+                    "???"
+                };
+
+                let (min, max, indicator) = if reply.min_byte1 == 0 && reply.max_byte1 == 0 {
+                    (reply.min_char_or_byte2, reply.max_char_or_byte2, ' ')
+                } else {
+                    (u16::from(reply.min_byte1), u16::from(reply.max_byte1), '*')
+                };
+
+                let all = if reply.all_chars_exist { "all" } else { "some" };
+
+                let name = String::from_utf8_lossy(&reply.name);
+
+                println!(
+                    "{} {}{:3} {}{:3} {:>5} {:4} {:4} {:3} {:4} {}",
+                    dir,
+                    indicator,
+                    min,
+                    indicator,
+                    max,
+                    all,
+                    reply.default_char,
+                    reply.properties.len(),
+                    reply.font_ascent,
+                    reply.font_descent,
+                    name
+                );
+            }
+            std::process::exit(1);
+        }
 
         let gc_aux = CreateGCAux::new()
             .graphics_exposures(0)
@@ -680,55 +604,159 @@ impl<'a, C: Connection> WM<'a, C> {
         connection.create_gc(black_gc, screen.root, &gc_aux)?;
         connection.close_font(font)?;
 
-        unsafe {
-            // let graphics_context =
-            //     (xlib.XCreateGC)(display, screen.root.into(), 0, std::ptr::null_mut());
+        let font = connection.generate_id()?;
+        connection.open_font(font, b"cursor")?;
 
-            let normal = (xlib.XCreateFontCursor)(display, LEFT_PTR);
-            let resize = (xlib.XCreateFontCursor)(display, SIZING);
-            let r#move = (xlib.XCreateFontCursor)(display, FLEUR);
+        // connection.create_glyph_cursor(
+        //     result,
+        //     cursor_font,
+        //     cursor_font,
+        //     cursor,
+        //     cursor + 1,
+        //     // foreground color
+        //     0,
+        //     0,
+        //     0,
+        //     // background color
+        //     u16::max_value(),
+        //     u16::max_value(),
+        //     u16::max_value(),
+        // );
 
-            Ok(WM {
-                xlib,
-                connection: connection,
-                display,
-                // graphics_context,
-                cursors: Cursors {
-                    normal,
-                    resize,
-                    r#move,
-                },
-                fonts: vec![],
-                screen_num,
-                windows: vec![],
-                black_gc,
-                sequences_to_ignore: Default::default(),
-            })
-        }
+        let normal = connection.generate_id()?;
+        connection.create_glyph_cursor(
+            normal,
+            font,
+            font,
+            LEFT_PTR,
+            LEFT_PTR + 1,
+            0,
+            0,
+            0,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+        )?;
+        let resize = connection.generate_id()?;
+        connection.create_glyph_cursor(
+            resize,
+            font,
+            font,
+            SIZING,
+            SIZING + 1,
+            0,
+            0,
+            0,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+        )?;
+        let r#move = connection.generate_id()?;
+        connection.create_glyph_cursor(
+            r#move,
+            font,
+            font,
+            FLEUR,
+            FLEUR + 1,
+            0,
+            0,
+            0,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+        )?;
+        let hand = connection.generate_id()?;
+        connection.create_glyph_cursor(
+            hand,
+            font,
+            font,
+            HAND,
+            HAND + 1,
+            0,
+            0,
+            0,
+            u16::MAX,
+            u16::MAX,
+            u16::MAX,
+        )?;
+
+        Ok(WM {
+            connection,
+            cursors: Cursors {
+                normal,
+                resize,
+                r#move,
+                hand,
+            },
+            fonts: vec![],
+            screen_num,
+            windows: vec![],
+            black_gc,
+            sequences_to_ignore: Default::default(),
+            bar: Bar {
+                window: None,
+                show: true,
+                pos: BarPosition::Top,
+                y: 0,
+                status_text: String::new(),
+                height: BAR_HEIGHT.try_into().unwrap(),
+                _phantom_data: PhantomData,
+            },
+            pending_expose: Default::default(),
+        })
     }
-}
 
-#[derive(Default)]
-pub struct Xywh {
-    x: i32,
-    y: i32,
-    h: i32,
-    w: i32,
-    minw: i32,
-    maxw: i32,
-    minh: i32,
-    maxh: i32,
-}
+    pub fn create_bar(&mut self) -> Result<(), XlibError> {
+        let bar_win_id = self.connection.generate_id()?;
 
-impl Xywh {
-    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
-        Self {
-            x,
-            y,
-            h: height,
-            w: width,
-            ..Default::default()
-        }
+        let root = &self.connection.setup().roots[self.screen_num];
+
+        let window_aux = CreateWindowAux::new()
+            .event_mask(EventMask::BUTTON_PRESS | EventMask::EXPOSURE)
+            .override_redirect(Some(true.into()))
+            .background_pixel(root.white_pixel)
+            .cursor(self.cursors.hand);
+
+        self.connection.create_window(
+            COPY_DEPTH_FROM_PARENT,
+            bar_win_id,
+            root.root,
+            0, // self.bounding_box.x.try_into().unwrap(),
+            self.bar.y.try_into().unwrap(),
+            1024, // self.bounding_box.width.try_into().unwrap(),
+            self.bar.height.try_into().unwrap(),
+            0,
+            WindowClass::COPY_FROM_PARENT,
+            root.root_visual,
+            &window_aux,
+        )?;
+
+        self.bar.window = Some(bar_win_id.into());
+
+        self.connection.change_property8(
+            PropMode::REPLACE,
+            bar_win_id,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            "Bunnuafeth bar".as_bytes(),
+        )?;
+        self.connection.change_property8(
+            PropMode::REPLACE,
+            bar_win_id,
+            AtomEnum::WM_CLASS,
+            AtomEnum::STRING,
+            "bunnuafeth-bar".as_bytes(),
+        )?;
+
+        tracing::debug!("mapping bar {bar_win_id}");
+        self.connection.map_window(bar_win_id)?;
+
+        let geom = self.connection.get_geometry(bar_win_id)?.reply()?;
+
+        self.windows
+            .push(WindowState::new(bar_win_id, root.root, &geom));
+
+        Ok(())
     }
 }
 
@@ -752,7 +780,7 @@ impl BoundingBox {
 }
 
 pub struct Monitor<'a, C: Connection> {
-    pub root: xlib::Window,
+    pub root: Window,
     pub output: String,
     pub bounding_box: BoundingBox,
     pub bar: Bar<'a, C>,
@@ -800,85 +828,6 @@ impl<'a, C: Connection> Monitor<'a, C> {
                 Ok(monitor)
             })
             .collect()
-    }
-    pub fn update_bar(&mut self, drawable: &WM<'a, C>) -> Result<(), XlibError> {
-        unsafe {
-            let mut attrs: XSetWindowAttributes = std::mem::zeroed();
-            attrs.override_redirect = true.into();
-            attrs.background_pixmap = ParentRelative as u64;
-            attrs.event_mask = ButtonPressMask | ExposureMask;
-
-            if self.bar.window.is_some() {
-                return Ok(());
-            }
-
-            let win_id = drawable.connection.generate_id().expect("win id");
-
-            let root = &drawable.connection.setup().roots[drawable.screen_num];
-
-            let resource_db = x11rb::resource_manager::new_from_default(drawable.connection)?;
-
-            let cursor_handle =
-                CursorHandle::new(drawable.connection, drawable.screen_num, &resource_db)?
-                    .reply()?;
-
-            let cursor = cursor_handle.load_cursor(drawable.connection, "left_ptr")?;
-
-            let window_aux = CreateWindowAux::new()
-                .event_mask(EventMask::BUTTON_PRESS | EventMask::EXPOSURE)
-                .override_redirect(Some(true.into()))
-                .background_pixel(root.white_pixel)
-                .cursor(cursor);
-
-            let bar_window = drawable.connection.create_window(
-                COPY_DEPTH_FROM_PARENT,
-                win_id,
-                root.root,
-                self.bounding_box.x.try_into().unwrap(),
-                self.bar.y.try_into().unwrap(),
-                self.bounding_box.width.try_into().unwrap(),
-                self.bar.height.try_into().unwrap(),
-                0,
-                WindowClass::COPY_FROM_PARENT,
-                root.root_visual,
-                &window_aux,
-            )?;
-
-            self.bar.window = Some(win_id.into());
-
-            let atom = drawable
-                .connection
-                .intern_atom(false, "WM_CLASS".as_bytes())?
-                .reply()?;
-
-            drawable.connection.map_window(win_id)?;
-            // drawable.connection.change_property(PropMode::REPLACE, win_id, atom.atom, AtomEnum::ATOM, , , );
-            drawable.connection.change_property8(
-                PropMode::REPLACE,
-                win_id,
-                AtomEnum::WM_NAME,
-                AtomEnum::STRING,
-                "Bunnuafeth bar".as_bytes(),
-            )?;
-            drawable.connection.change_property8(
-                PropMode::REPLACE,
-                win_id,
-                AtomEnum::WM_CLASS,
-                AtomEnum::STRING,
-                "bunnuafeth-bar".as_bytes(),
-            )?;
-
-            // (xlib.XDefineCursor)(drawable.display, bar_window, drawable.cursors.normal);
-            // (xlib.XMapRaised)(drawable.display, bar_window);
-        }
-        Ok(())
-    }
-    pub fn draw_bar(&mut self, xlib: &Xlib, drawable: &WM<'a, C>) {
-        // self.bar.update_status(xlib, drawable);
-
-        if !self.bar.show {
-            return;
-        }
     }
 }
 
@@ -969,38 +918,38 @@ impl<'a, C: Connection> Monitor<'a, C> {
     }
 }
 
-pub fn run(connection: &RustConnection) -> Result<(), XlibError> {
+pub fn run<'a, C: Connection>(mut wm: WM<'a, C>) -> Result<(), XlibError> {
+    let mut output = std::process::Command::new("kitty").spawn().unwrap();
+    std::thread::spawn(move || {
+        if let Some(stdout) = output.stdout.take() {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Some(Ok(line)) = lines.next() {
+                tracing::debug!("{line}");
+            }
+        }
+    });
+
     loop {
-        connection.flush()?;
-        let event = connection.wait_for_event()?;
+        wm.refresh();
+        wm.connection.flush()?;
 
+        let event = wm.connection.wait_for_event()?;
         let mut event_option = Some(event);
-
         while let Some(event) = event_option {
             // if let x11rb::protocol::Event::ClientMessage(_) = event {
             //     // This is start_timeout_thread() signaling us to close (most likely).
             //     return Ok(());
             // }
 
-            println!("event: {:#?}", event);
-
-            // wm_state.handle_event(event)?;
-            event_option = connection.poll_for_event()?;
+            wm.handle_event(event)?;
+            event_option = wm.connection.poll_for_event()?;
         }
     }
-
-    #[allow(unreachable_code)]
-    Ok(())
 }
 
 pub fn setup_wm_attrs<'a, C: Connection>(wm: &WM<'a, C>) -> Result<(), XlibError> {
     let screen = &wm.connection.setup().roots[wm.screen_num];
-
-    let resource_db = x11rb::resource_manager::new_from_default(wm.connection)?;
-
-    let cursor_handle = CursorHandle::new(wm.connection, wm.screen_num, &resource_db)?.reply()?;
-
-    let cursor = cursor_handle.load_cursor(wm.connection, "left_ptr")?;
 
     let change = ChangeWindowAttributesAux::default()
         .event_mask(
@@ -1010,7 +959,7 @@ pub fn setup_wm_attrs<'a, C: Connection>(wm: &WM<'a, C>) -> Result<(), XlibError
                 | EventMask::POINTER_MOTION
                 | EventMask::STRUCTURE_NOTIFY,
         )
-        .cursor(cursor);
+        .cursor(wm.cursors.normal);
 
     let res = wm
         .connection
@@ -1019,7 +968,7 @@ pub fn setup_wm_attrs<'a, C: Connection>(wm: &WM<'a, C>) -> Result<(), XlibError
 
     if let Err(ReplyError::X11Error(ref error)) = res {
         if error.error_kind == ErrorKind::Access {
-            eprintln!("Another WM is already running.");
+            tracing::error!("Another WM is already running.");
             std::process::exit(1);
         }
     }
@@ -1073,6 +1022,8 @@ pub fn setup_wm_attrs<'a, C: Connection>(wm: &WM<'a, C>) -> Result<(), XlibError
     wm.connection
         .randr_select_input(screen.root, NotifyMask::SCREEN_CHANGE)?;
 
+    wm.connection.map_window(win_id)?;
+
     Ok(())
 }
 
@@ -1092,23 +1043,4 @@ pub enum XlibError {
 
     #[error(transparent)]
     XrbReplyError(#[from] x11rb::errors::ReplyError),
-}
-
-fn get_text_prop<'a, C: Connection>(
-    xlib: &Xlib,
-    drawable: &WM<'a, C>,
-    window: xlib::Window,
-    atom: xlib::Atom,
-) -> Result<String, XlibError> {
-    unsafe {
-        let mut text_prop: xlib::XTextProperty = std::mem::zeroed();
-        let status: c_int = (xlib.XGetTextProperty)(drawable.display, window, &mut text_prop, atom);
-        if status == 0 {
-            return Err(XlibError::FailedStatus);
-        }
-        if let Ok(s) = CString::from_raw(text_prop.value.cast::<c_char>()).into_string() {
-            return Ok(s);
-        }
-    };
-    Err(XlibError::FailedStatus)
 }
