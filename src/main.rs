@@ -1,5 +1,5 @@
-use bunnuafeth::{run, setup_wm_attrs, WM};
-use x11rb::connect;
+use bunnuafeth::{run, Config, Hotkey, WM};
+use x11rb::{connect, protocol::xproto::ModMask};
 
 fn init_tracing() {
     use tracing_subscriber::prelude::*;
@@ -18,7 +18,35 @@ fn main() {
     let conn1 = std::sync::Arc::new(connection);
     let conn = &*conn1;
 
-    let mut wm = WM::new(conn, screen_num).expect("create drawable");
+    let hotkeys = vec![
+        Hotkey::new(
+            ModMask::SHIFT,
+            x11_keysyms::XK_q,
+            bunnuafeth::Command::Execute(String::from("shift")),
+        ),
+        Hotkey::new(
+            ModMask::M1,
+            x11_keysyms::XK_q,
+            bunnuafeth::Command::Execute(String::from("alt")),
+        ),
+        Hotkey::new(
+            ModMask::M4,
+            x11_keysyms::XK_q,
+            bunnuafeth::Command::Execute(String::from("super")),
+        ),
+        Hotkey::new(
+            ModMask::CONTROL,
+            x11_keysyms::XK_q,
+            bunnuafeth::Command::Execute(String::from("control")),
+        ),
+    ];
+
+    let config = Config { hotkeys };
+
+    let mut wm = WM::new(conn, screen_num, config).expect("create drawable");
+    // 6275a6
+    //                                red  green  blue
+    wm.set_root_background_color(0x00__62__75_____a6__).unwrap();
 
     wm.create_bar().unwrap();
     wm.bar.update_position(&wm).unwrap();
@@ -36,7 +64,7 @@ fn main() {
     //             .expect("update bar position");
     //     });
 
-    setup_wm_attrs(&wm).expect("setup window manager");
+    wm.setup().expect("setup window manager");
 
     run(wm).expect("run window manager");
 }

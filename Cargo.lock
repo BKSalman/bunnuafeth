@@ -30,6 +30,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
+ "x11-keysyms",
  "x11rb",
 ]
 
@@ -353,6 +354,12 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "x11-keysyms"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6462285b997685c657ff2b26c9b444ba84dadf7d38c08bc49ebf80f8a6d3c40"
 
 [[package]]
 name = "x11rb"
