@@ -1,5 +1,8 @@
-use bunnuafeth::{run, Config, Hotkey, WM};
-use x11rb::{connect, protocol::xproto::ModMask};
+use bunnuafeth::{run, wm::WM, Config, Hotkey, MouseHotkey, WMCommand};
+use x11rb::{
+    connect,
+    protocol::xproto::{ButtonIndex, ModMask},
+};
 
 fn init_tracing() {
     use tracing_subscriber::prelude::*;
@@ -20,28 +23,29 @@ fn main() {
 
     let hotkeys = vec![
         Hotkey::new(
-            ModMask::SHIFT,
+            ModMask::M1,
             x11_keysyms::XK_q,
-            bunnuafeth::Command::Execute(String::from("shift")),
+            WMCommand::Execute(String::from("kitty")),
         ),
         Hotkey::new(
             ModMask::M1,
-            x11_keysyms::XK_q,
-            bunnuafeth::Command::Execute(String::from("alt")),
+            x11_keysyms::XK_p,
+            WMCommand::Execute(String::from("xprop")),
         ),
-        Hotkey::new(
-            ModMask::M4,
-            x11_keysyms::XK_q,
-            bunnuafeth::Command::Execute(String::from("super")),
-        ),
-        Hotkey::new(
-            ModMask::CONTROL,
-            x11_keysyms::XK_q,
-            bunnuafeth::Command::Execute(String::from("control")),
-        ),
+        Hotkey::new(ModMask::M1, x11_keysyms::XK_c, WMCommand::CloseWindow),
+        Hotkey::new(ModMask::M1, x11_keysyms::XK_Alt_L, WMCommand::MoveWindow),
     ];
 
-    let config = Config { hotkeys };
+    let mouse_hotkeys = vec![MouseHotkey::new(
+        ModMask::M1,
+        ButtonIndex::M1,
+        WMCommand::MoveWindow,
+    )];
+
+    let config = Config {
+        hotkeys,
+        mouse_hotkeys,
+    };
 
     let mut wm = WM::new(conn, screen_num, config).expect("create drawable");
     // 6275a6
