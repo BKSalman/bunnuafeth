@@ -457,7 +457,7 @@ impl<'a, C: Connection> WM<'a, C> {
             root.root,
             0, // self.bounding_box.x.try_into().unwrap(),
             self.bar.y.try_into().unwrap(),
-            1024, // self.bounding_box.width.try_into().unwrap(),
+            self.screen().width_in_pixels, // self.bounding_box.width.try_into().unwrap(),
             self.bar.height.try_into().unwrap(),
             0,
             WindowClass::COPY_FROM_PARENT,
