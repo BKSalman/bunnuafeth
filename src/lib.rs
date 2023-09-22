@@ -73,6 +73,8 @@ pub enum WMCommand {
     Execute(String),
     CloseWindow,
     MoveWindow,
+    /// the parameter here is not needed for mouse resizing
+    ResizeWindow(i16),
 }
 
 pub struct Config {
@@ -150,18 +152,18 @@ pub struct WindowState {
     width: u16,
     height: u16,
     pub window: Window,
-    frame_window: Window,
+    is_bar: bool,
 }
 
 impl WindowState {
-    fn new(window: Window, frame_window: Window, geom: &GetGeometryReply) -> WindowState {
+    fn new(window: Window, geom: &GetGeometryReply, is_bar: bool) -> WindowState {
         WindowState {
             window,
-            frame_window,
             x: geom.x,
             y: geom.y,
             width: geom.width,
             height: geom.height,
+            is_bar,
         }
     }
 }

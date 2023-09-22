@@ -7,13 +7,15 @@ use std::{
 };
 use x11rb::{
     connection::Connection,
+    // TODO: use this
+    properties::WmHints,
     protocol::{
         glx::Window,
         randr::{ConnectionExt as RandrConnectionExt, NotifyMask},
         xproto::{
             AtomEnum, ButtonPressEvent, ButtonReleaseEvent, ChangeWindowAttributesAux,
             ClientMessageEvent, ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt,
-            CreateGCAux, CreateWindowAux, DestroyNotifyEvent, EnterNotifyEvent, EventMask,
+            CreateGCAux, CreateWindowAux, Cursor, DestroyNotifyEvent, EnterNotifyEvent, EventMask,
             ExposeEvent, FontDraw, Gcontext, GetGeometryReply, GrabMode, KeyPressEvent,
             MapRequestEvent, MapState, ModMask, MotionNotifyEvent, PropMode, Rectangle, Screen,
             SetMode, UnmapNotifyEvent, WindowClass,
@@ -22,7 +24,9 @@ use x11rb::{
     },
     rust_connection::ReplyError,
     wrapper::ConnectionExt as WrapperConnectionExt,
-    COPY_DEPTH_FROM_PARENT, CURRENT_TIME, NONE,
+    COPY_DEPTH_FROM_PARENT,
+    CURRENT_TIME,
+    NONE,
 };
 
 use crate::{
@@ -36,8 +40,6 @@ pub const FLEUR: u16 = 52;
 pub const HAND: u16 = 60;
 
 pub const DRAG_BUTTON: u8 = 1;
-
-type Cursor = u32;
 
 pub struct Cursors {
     pub normal: Cursor,
@@ -63,6 +65,7 @@ pub struct WM<'a, C: Connection> {
     pub sequences_to_ignore: BinaryHeap<Reverse<u16>>,
     pub bar: Bar<'a, C>,
     drag_window: Option<(Window, (i16, i16))>,
+    resize_window: Option<(Window, ((u16, u16), (i16, i16)))>,
     pointer_grabbed: bool,
     config: Config,
     key_mapping: HashMap<KeyMapping, WMCommand>,
@@ -229,6 +232,7 @@ impl<'a, C: Connection> WM<'a, C> {
             },
             pending_expose: Default::default(),
             drag_window: None,
+            resize_window: None,
             config,
             key_mapping: HashMap::new(),
             focused_window: None,
@@ -246,11 +250,8 @@ impl<'a, C: Connection> WM<'a, C> {
                 EventMask::SUBSTRUCTURE_REDIRECT
                     | EventMask::SUBSTRUCTURE_NOTIFY
                     | EventMask::BUTTON_PRESS
-                    | EventMask::BUTTON_RELEASE
-                    | EventMask::POINTER_MOTION
-                    | EventMask::KEY_PRESS
-                    | EventMask::POINTER_MOTION
-                    | EventMask::STRUCTURE_NOTIFY,
+                    | EventMask::BUTTON_RELEASE, // | EventMask::STRUCTURE_NOTIFY,
+                                                 // | EventMask::POINTER_MOTION,
             )
             .cursor(self.cursors.normal);
 
@@ -409,10 +410,11 @@ impl<'a, C: Connection> WM<'a, C> {
                 .mouse_hotkeys
                 .iter()
                 .fold(HashMap::new(), |mut acc, mhk| {
-                    let mods = vec![mhk.mods, mhk.mods | ModMask::M2, mhk.mods | ModMask::LOCK];
-                    for r#mod in mods {
-                        acc.insert(ButtonMapping::new(mhk.button, r#mod), mhk.command.clone());
-                    }
+                    [mhk.mods, mhk.mods | ModMask::M2, mhk.mods | ModMask::LOCK]
+                        .into_iter()
+                        .for_each(|r#mod| {
+                            acc.insert(ButtonMapping::new(mhk.button, r#mod), mhk.command.clone());
+                        });
                     acc
                 });
     }
@@ -485,8 +487,7 @@ impl<'a, C: Connection> WM<'a, C> {
 
         let geom = self.connection.get_geometry(bar_win_id)?.reply()?;
 
-        self.windows
-            .push(WindowState::new(bar_win_id, root.root, &geom));
+        self.windows.push(WindowState::new(bar_win_id, &geom, true));
 
         Ok(())
     }
@@ -517,20 +518,25 @@ impl<'a, C: Connection> WM<'a, C> {
             }],
         )?;
 
-        let reply = self
-            .connection
-            .get_property(
-                false,
-                state.window,
-                AtomEnum::WM_NAME,
-                AtomEnum::STRING,
-                0,
-                std::u32::MAX,
-            )?
-            .reply()?;
+        if let Some(fw_state) = &self.focused_window {
+            let reply = self
+                .connection
+                .get_property(
+                    false,
+                    fw_state.window,
+                    AtomEnum::WM_NAME,
+                    AtomEnum::STRING,
+                    0,
+                    std::u32::MAX,
+                )?
+                .reply()?;
+            self.connection
+                .image_text8(state.window, self.black_gc, 1, 10, &reply.value)?;
+        } else {
+            self.connection
+                .image_text8(state.window, self.black_gc, 1, 10, b"something")?;
+        }
 
-        self.connection
-            .image_text8(state.window, self.black_gc, 1, 10, b"something")?;
         Ok(())
     }
 
@@ -593,15 +599,11 @@ impl<'a, C: Connection> WM<'a, C> {
     // }
 
     fn find_window_by_id(&self, win: Window) -> Option<&WindowState> {
-        self.windows
-            .iter()
-            .find(|state| state.window == win || state.frame_window == win)
+        self.windows.iter().find(|state| state.window == win)
     }
 
     fn find_window_by_id_mut(&mut self, win: Window) -> Option<&mut WindowState> {
-        self.windows
-            .iter_mut()
-            .find(|state| state.window == win || state.frame_window == win)
+        self.windows.iter_mut().find(|state| state.window == win)
     }
 
     /// Scan for already existing windows and manage them
@@ -632,22 +634,19 @@ impl<'a, C: Connection> WM<'a, C> {
     }
 
     fn manage_window(&mut self, win: Window, geom: &GetGeometryReply) -> Result<(), XlibError> {
-        tracing::debug!("Managing window {:?}", win);
+        tracing::debug!("managing window {:?}", win);
         let screen = self.screen();
         assert!(
             self.find_window_by_id(win).is_none(),
             "Unmanaged window should not exist already!"
         );
         let change = ChangeWindowAttributesAux::new().event_mask(
-            EventMask::EXPOSURE
-                | EventMask::SUBSTRUCTURE_NOTIFY
-                | EventMask::BUTTON_PRESS
-                | EventMask::BUTTON_RELEASE
-                | EventMask::KEY_PRESS
-                | EventMask::KEY_RELEASE
-                | EventMask::POINTER_MOTION
-                | EventMask::ENTER_WINDOW
-                | EventMask::LEAVE_WINDOW,
+            EventMask::ENTER_WINDOW
+                | EventMask::FOCUS_CHANGE
+                | EventMask::PROPERTY_CHANGE
+                | EventMask::VISIBILITY_CHANGE
+                | EventMask::EXPOSURE
+                | EventMask::STRUCTURE_NOTIFY,
         );
         let cookie = self.connection.change_window_attributes(win, &change)?;
 
@@ -663,7 +662,7 @@ impl<'a, C: Connection> WM<'a, C> {
         self.connection.map_window(win)?.sequence_number();
         self.connection.ungrab_server()?;
 
-        let window_state = WindowState::new(win, screen.root, geom);
+        let window_state = WindowState::new(win, geom, false);
 
         self.focused_window = Some(window_state.clone());
         self.windows.push(window_state);
@@ -696,18 +695,18 @@ impl<'a, C: Connection> WM<'a, C> {
         }
 
         if !matches!(event, Event::MotionNotify(_)) {
-            tracing::debug!("Got event {:?}", event);
+            tracing::debug!("got event {:?}", event);
         }
         if should_ignore {
-            tracing::debug!("  [ignored]");
+            tracing::debug!("[ignored]");
             return Ok(());
         }
         match event {
+            Event::MapRequest(event) => self.handle_map_request(event)?,
+            Event::Expose(event) => self.handle_expose(event),
             Event::DestroyNotify(event) => self.handle_destroy_notify(event)?,
             Event::UnmapNotify(event) => self.handle_unmap_notify(event)?,
             Event::ConfigureRequest(event) => self.handle_configure_request(event)?,
-            Event::MapRequest(event) => self.handle_map_request(event)?,
-            Event::Expose(event) => self.handle_expose(event),
             Event::EnterNotify(event) => self.handle_enter(event)?,
             Event::LeaveNotify(event) => self.handle_leave(event),
             Event::ButtonPress(event) => self.handle_button_press(event)?,
@@ -729,7 +728,7 @@ impl<'a, C: Connection> WM<'a, C> {
         let aux = ConfigureWindowAux::from_configure_request(&event)
             .sibling(None)
             .stack_mode(None);
-        tracing::debug!("Configure: {:?}", aux);
+        tracing::debug!("configure: {:?}", aux);
         self.connection.configure_window(event.window, &aux)?;
         Ok(())
     }
@@ -746,10 +745,6 @@ impl<'a, C: Connection> WM<'a, C> {
     }
 
     fn handle_button_press(&mut self, event: ButtonPressEvent) -> Result<(), XlibError> {
-        if event.detail != DRAG_BUTTON {
-            return Ok(());
-        }
-
         let button_mapping = ButtonMapping::new(event.detail, u16::from(event.state));
 
         if let Some(command) = self.button_mapping.get(&button_mapping) {
@@ -757,52 +752,59 @@ impl<'a, C: Connection> WM<'a, C> {
                 WMCommand::Execute(_) => todo!(),
                 WMCommand::CloseWindow => todo!(),
                 WMCommand::MoveWindow => {
-                    tracing::debug!("move window");
-                    if !self.pointer_grabbed {
-                        let screen = self.screen();
+                    tracing::debug!("move event: {}", event.child);
+                    let window = self.find_window_by_id(event.child).cloned();
+                    if let Some(state) = window {
+                        self.conditionally_grab_pointer(state.window)?;
 
-                        self.connection.grab_pointer(
-                            false,
-                            screen.root,
-                            EventMask::BUTTON_PRESS
-                                | EventMask::BUTTON_RELEASE
-                                | EventMask::BUTTON_MOTION
-                                | EventMask::POINTER_MOTION,
-                            GrabMode::ASYNC,
-                            GrabMode::ASYNC,
-                            NONE,
-                            NONE,
-                            CURRENT_TIME,
-                        )?;
-                        self.pointer_grabbed = true;
+                        let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
+                        self.connection
+                            .change_window_attributes(state.window, &change)?;
+                        let geometry = self.connection.get_geometry(state.window)?.reply()?;
+                        self.drag_window = Some((
+                            state.window,
+                            (geometry.x - event.event_x, geometry.y - event.event_y),
+                        ));
                     }
-                    let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
-                    self.connection
-                        .change_window_attributes(event.event, &change)?;
-                    if let Some(state) = self.find_window_by_id(event.event) {
-                        let (x, y) = (-event.event_x, -event.event_y);
-                        self.drag_window = Some((state.window, (x, y)));
+                }
+                WMCommand::ResizeWindow(_) => {
+                    if let Some(state) = self.find_window_by_id(event.child) {
+                        let window = state.window;
+                        self.conditionally_grab_pointer(window)?;
+                        let change = ChangeWindowAttributesAux::new().cursor(self.cursors.resize);
+                        self.connection.change_window_attributes(window, &change)?;
+
+                        let geometry = self.connection.get_geometry(window)?.reply()?;
+                        self.resize_window = Some((
+                            window,
+                            (
+                                (geometry.width, geometry.height),
+                                (geometry.x - event.event_x, geometry.y - event.event_y),
+                            ),
+                        ));
                     }
                 }
             }
         }
-
-        // if let Some(state) = self.find_window_by_id(event.event) {
-        //     if self.drag_window.is_none() && event.event_x < state.close_x_position() {
-        //         let (x, y) = (-event.event_x, -event.event_y);
-        //         self.drag_window = Some((state.window, (x, y)));
-        //     }
-        // }
-
         Ok(())
     }
 
     fn handle_button_release(&mut self, event: ButtonReleaseEvent) -> Result<(), XlibError> {
-        if event.detail == DRAG_BUTTON {
-            self.drag_window = None;
-            self.pointer_grabbed = false;
-            self.connection.ungrab_pointer(CURRENT_TIME)?;
+        if let Some(drag_window) = self.drag_window {
+            let change = ChangeWindowAttributesAux::new().cursor(self.cursors.normal);
+            self.connection
+                .change_window_attributes(drag_window.0, &change)?;
         }
+        if let Some(resize_window) = self.resize_window {
+            let change = ChangeWindowAttributesAux::new().cursor(self.cursors.normal);
+            self.connection
+                .change_window_attributes(resize_window.0, &change)?;
+        }
+
+        self.drag_window = None;
+        self.resize_window = None;
+        self.pointer_grabbed = false;
+        self.connection.ungrab_pointer(CURRENT_TIME)?;
         Ok(())
     }
 
@@ -850,6 +852,7 @@ impl<'a, C: Connection> WM<'a, C> {
                         }
                     }
                 }
+                WMCommand::ResizeWindow(_factor) => todo!(),
             };
         }
 
@@ -877,9 +880,27 @@ impl<'a, C: Connection> WM<'a, C> {
     fn handle_motion_notify(&mut self, event: MotionNotifyEvent) -> Result<(), ReplyError> {
         if let Some((win, (x, y))) = self.drag_window {
             let (x, y) = (x + event.root_x, y + event.root_y);
-            let (x, y) = (x as i32, y as i32);
             self.connection
-                .configure_window(win, &ConfigureWindowAux::new().x(x).y(y))?;
+                .configure_window(win, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
+            if let Some(state) = self.find_window_by_id_mut(win) {
+                state.x = x;
+                state.y = y;
+            }
+        } else if let Some((win, ((width, height), (x, y)))) = self.resize_window {
+            let (width, height) = (
+                width as i16 + x + event.event_x,
+                height as i16 + y + event.event_y,
+            );
+            self.connection.configure_window(
+                win,
+                &ConfigureWindowAux::new()
+                    .width(width as u32)
+                    .height(height as u32),
+            )?;
+            if let Some(state) = self.find_window_by_id_mut(win) {
+                state.width = width as u16;
+                state.height = height as u16;
+            }
         }
         Ok(())
     }
@@ -946,7 +967,7 @@ impl<'a, C: Connection> WM<'a, C> {
         // TODO: make this better
         self.windows
             .iter()
-            .filter(|w| Some(w.window) != self.bar.window)
+            .filter(|w| !w.is_bar)
             .next_back()
             .cloned()
     }
@@ -1014,6 +1035,27 @@ impl<'a, C: Connection> WM<'a, C> {
         );
         self.connection
             .send_event(false, window, EventMask::NO_EVENT, event)?;
+
+        Ok(())
+    }
+
+    fn conditionally_grab_pointer(&mut self, window: Window) -> Result<(), XlibError> {
+        if !self.pointer_grabbed {
+            self.connection.grab_pointer(
+                true,
+                window,
+                EventMask::BUTTON_PRESS
+                    | EventMask::BUTTON_RELEASE
+                    | EventMask::BUTTON_MOTION
+                    | EventMask::POINTER_MOTION,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+                NONE,
+                NONE,
+                CURRENT_TIME,
+            )?;
+            self.pointer_grabbed = true;
+        }
 
         Ok(())
     }

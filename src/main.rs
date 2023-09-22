@@ -36,11 +36,10 @@ fn main() {
         Hotkey::new(ModMask::M1, x11_keysyms::XK_Alt_L, WMCommand::MoveWindow),
     ];
 
-    let mouse_hotkeys = vec![MouseHotkey::new(
-        ModMask::M1,
-        ButtonIndex::M1,
-        WMCommand::MoveWindow,
-    )];
+    let mouse_hotkeys = vec![
+        MouseHotkey::new(ModMask::M1, ButtonIndex::M1, WMCommand::MoveWindow),
+        MouseHotkey::new(ModMask::M1, ButtonIndex::M3, WMCommand::ResizeWindow(0)),
+    ];
 
     let config = Config {
         hotkeys,
