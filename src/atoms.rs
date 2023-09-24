@@ -41,14 +41,18 @@ x11rb::atom_manager! {
         _NET_WM_WINDOW_TYPE_UTILITY,
         _NET_WM_WINDOW_TYPE_SPLASH,
         _NET_WM_WINDOW_TYPE_DIALOG,
+        _NET_WM_WINDOW_TYPE_NORMAL,
 
         _NET_CLIENT_LIST,
         _NET_DESKTOP_VIEWPORT,
+        _NET_DESKTOP_GEOMETRY,
         _NET_NUMBER_OF_DESKTOPS,
         _NET_CURRENT_DESKTOP,
         _NET_DESKTOP_NAMES,
+        _NET_WORKAREA,
         _NET_WM_DESKTOP,
         _NET_WM_STRUT,
+        _NET_FRAME_EXTENTS,
 
         _NET_WM_NAME,
 
@@ -60,12 +64,8 @@ x11rb::atom_manager! {
 impl Atoms {
     pub fn net_supported(&self) -> Vec<Atom> {
         vec![
-            self._NET_ACTIVE_WINDOW,
-            self._NET_SUPPORTED,
-            self._NET_WM_NAME,
+            // STATE
             self._NET_WM_STATE,
-            self._NET_WM_ALLOWED_ACTIONS,
-            self._NET_WM_PID,
             self._NET_WM_STATE_MODAL,
             self._NET_WM_STATE_STICKY,
             self._NET_WM_STATE_MAXIMIZED_VERT,
@@ -78,6 +78,7 @@ impl Atoms {
             self._NET_WM_STATE_ABOVE,
             self._NET_WM_STATE_BELOW,
             self._NET_WM_STATE_DEMANDS_ATTENTION,
+            // ACTION
             self._NET_WM_ACTION_MOVE,
             self._NET_WM_ACTION_RESIZE,
             self._NET_WM_ACTION_MINIMIZE,
@@ -88,6 +89,7 @@ impl Atoms {
             self._NET_WM_ACTION_FULLSCREEN,
             self._NET_WM_ACTION_CHANGE_DESKTOP,
             self._NET_WM_ACTION_CLOSE,
+            // WINDOW
             self._NET_WM_WINDOW_TYPE,
             self._NET_WM_WINDOW_TYPE_DESKTOP,
             self._NET_WM_WINDOW_TYPE_DOCK,
@@ -96,8 +98,8 @@ impl Atoms {
             self._NET_WM_WINDOW_TYPE_UTILITY,
             self._NET_WM_WINDOW_TYPE_SPLASH,
             self._NET_WM_WINDOW_TYPE_DIALOG,
+            // other
             self._NET_SUPPORTING_WM_CHECK,
-            self._NET_CLIENT_LIST,
             self._NET_DESKTOP_VIEWPORT,
             self._NET_NUMBER_OF_DESKTOPS,
             self._NET_CURRENT_DESKTOP,
@@ -105,6 +107,13 @@ impl Atoms {
             self._NET_WM_DESKTOP,
             self._NET_WM_DESKTOP,
             self._NET_WM_STRUT,
+            self._NET_CLIENT_LIST,
+            self._NET_ACTIVE_WINDOW,
+            self._NET_DESKTOP_GEOMETRY,
+            self._NET_SUPPORTED,
+            self._NET_WM_NAME,
+            self._NET_WM_ALLOWED_ACTIONS,
+            self._NET_WM_PID,
         ]
     }
 }

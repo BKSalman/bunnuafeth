@@ -21,6 +21,65 @@ pub mod wm;
 
 pub const BAR_HEIGHT: u16 = 30;
 
+pub struct RGBA {
+    red: u8,
+    green: u8,
+    blue: u8,
+    alpha: u8,
+}
+
+impl RGBA {
+    const CYAN: RGBA = RGBA::new(0x00, 0x55, 0x77, 0xff);
+    const BLACK: RGBA = RGBA::new(0x00, 0x00, 0x00, 0xff);
+    pub const fn new(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
+        Self {
+            red,
+            green,
+            blue,
+            alpha,
+        }
+    }
+
+    pub fn as_argb_u32(&self) -> u32 {
+        ((self.alpha as u32) << 24)
+            | ((self.red as u32) << 16)
+            | ((self.green as u32) << 8)
+            | (self.blue as u32)
+    }
+
+    pub fn as_rgba_u32(&self) -> u32 {
+        ((self.red as u32) << 24)
+            | ((self.green as u32) << 16)
+            | ((self.blue as u32) << 8)
+            | (self.alpha as u32)
+    }
+}
+
+impl From<u32> for RGBA {
+    fn from(value: u32) -> Self {
+        let red = (value & 0x00_00_00_ff) as u8;
+        let green = (value & 0x00_00_ff_00) as u8;
+        let blue = (value & 0x00_ff_00_00) as u8;
+        let alpha = (value & 0xff_00_00_00) as u8;
+
+        Self {
+            red,
+            green,
+            blue,
+            alpha,
+        }
+    }
+}
+
+impl Into<u32> for RGBA {
+    fn into(self) -> u32 {
+        ((self.alpha as u32) << 24)
+            | ((self.red as u32) << 16)
+            | ((self.green as u32) << 8)
+            | (self.blue as u32)
+    }
+}
+
 pub trait BunnuConnectionExt {
     fn bunnu_create_simple_window(
         &self,
@@ -152,11 +211,17 @@ pub struct WindowState {
     width: u16,
     height: u16,
     pub window: Window,
+    r#type: WindowType,
     is_bar: bool,
 }
 
 impl WindowState {
-    fn new(window: Window, geom: &GetGeometryReply, is_bar: bool) -> WindowState {
+    fn new(
+        window: Window,
+        geom: &GetGeometryReply,
+        is_bar: bool,
+        r#type: WindowType,
+    ) -> WindowState {
         WindowState {
             window,
             x: geom.x,
@@ -164,20 +229,33 @@ impl WindowState {
             width: geom.width,
             height: geom.height,
             is_bar,
+            r#type,
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum WindowType {
+    Desktop,
+    Dock,
+    Toolbar,
+    Menu,
+    Utility,
+    Splash,
+    Dialog,
+    Normal,
+}
+
 #[derive(Default)]
 pub struct BoundingBox {
-    x: i32,
-    pub y: i32,
-    pub height: i32,
-    width: i32,
+    x: i16,
+    pub y: i16,
+    pub height: u16,
+    width: u16,
 }
 
 impl BoundingBox {
-    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
+    pub fn new(x: i16, y: i16, width: u16, height: u16) -> Self {
         Self {
             x,
             y,
@@ -196,25 +274,27 @@ pub struct Monitor<'a, C: Connection> {
 }
 
 impl<'a, C: Connection> Monitor<'a, C> {
-    pub fn with_bbox(bounding_box: BoundingBox, bar_height: i32) -> Self {
+    pub fn with_bbox(bounding_box: BoundingBox, bar_height: u16) -> Self {
         Self {
             output: String::new(),
-            bounding_box,
-            root: Default::default(),
             bar: Bar {
                 window: None,
                 show: true,
                 pos: BarPosition::Top,
+                x: 0,
                 y: 0,
                 status_text: String::new(),
                 height: bar_height,
+                width: bounding_box.width,
                 _phantom_data: PhantomData,
             },
+            bounding_box,
+            root: Default::default(),
             _phantom_data: PhantomData,
         }
     }
 
-    pub fn new(bar_height: i32) -> Self {
+    pub fn new(bar_width: u16, bar_height: u16) -> Self {
         Self {
             output: String::new(),
             bounding_box: BoundingBox::new(0, 0, 0, 0),
@@ -223,9 +303,11 @@ impl<'a, C: Connection> Monitor<'a, C> {
                 window: None,
                 show: true,
                 pos: BarPosition::Top,
+                x: 0,
                 y: 0,
                 status_text: String::new(),
                 height: bar_height,
+                width: bar_width,
                 _phantom_data: PhantomData,
             },
             _phantom_data: PhantomData,
@@ -246,7 +328,7 @@ impl<'a, C: Connection> Monitor<'a, C> {
                 let output_info = wm
                     .connection
                     .randr_get_output_info(
-                        *m.outputs.iter().next().expect("monitor output"),
+                        *m.outputs.first().expect("monitor output"),
                         CURRENT_TIME,
                     )?
                     .reply()?;
@@ -257,16 +339,11 @@ impl<'a, C: Connection> Monitor<'a, C> {
                     .reply()?;
 
                 let mut monitor = Monitor::with_bbox(
-                    BoundingBox::new(
-                        crtc.x.into(),
-                        crtc.y.into(),
-                        crtc.width as i32,
-                        crtc.height as i32,
-                    ),
+                    BoundingBox::new(crtc.x, crtc.y, crtc.width, crtc.height),
                     30,
                 );
 
-                monitor.root = root.root.into();
+                monitor.root = root.root;
                 monitor.output = String::from_utf8(output_info.name).expect("output name utf8");
 
                 Ok(monitor)
@@ -275,7 +352,7 @@ impl<'a, C: Connection> Monitor<'a, C> {
     }
 }
 
-pub fn run<'a, C: Connection>(mut wm: WM<'a, C>) -> Result<(), XlibError> {
+pub fn run<C: Connection>(mut wm: WM<'_, C>) -> Result<(), XlibError> {
     let mut output = std::process::Command::new("kitty").spawn().unwrap();
     std::thread::spawn(move || {
         if let Some(stdout) = output.stdout.take() {

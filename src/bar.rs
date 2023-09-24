@@ -8,32 +8,48 @@ pub struct Bar<'a, C: Connection> {
     pub window: Option<Window>,
     pub show: bool,
     pub pos: BarPosition,
-    pub y: i32,
+    pub y: i16,
+    pub x: i16,
     pub status_text: String,
-    pub height: i32,
+    pub height: u16,
+    pub width: u16,
     pub _phantom_data: PhantomData<&'a C>,
 }
 
 impl<'a, C: Connection> Bar<'a, C> {
-    pub fn update_position(&self, drawable: &WM<'a, C>) -> Result<(), XlibError> {
-        let mut monitors = Monitor::get_monitors(drawable)?;
+    pub fn update_position(&self, wm: &WM<'a, C>) -> Result<(), XlibError> {
+        // let mut monitors = Monitor::get_monitors(drawable)?;
 
-        for monitor in monitors.iter_mut() {
-            if monitor.bar.show {
-                monitor.bounding_box.height -= self.height;
-                match monitor.bar.pos {
-                    BarPosition::Top => {
-                        monitor.bar.y = monitor.bounding_box.y;
-                        monitor.bounding_box.y += self.height;
-                    }
-                    BarPosition::Bottom => {
-                        monitor.bar.y = monitor.bounding_box.height + monitor.bounding_box.y;
-                    }
-                }
-            } else {
-                monitor.bar.y = -self.height;
-            }
-        }
+        // for monitor in monitors.iter_mut() {
+        //     if monitor.bar.show {
+        //         monitor.bounding_box.height -= self.height;
+        //         match monitor.bar.pos {
+        //             BarPosition::Top => {
+        //                 monitor.bar.y = monitor.bounding_box.y;
+        //                 monitor.bounding_box.y += self.height;
+        //             }
+        //             BarPosition::Bottom => {
+        //                 monitor.bar.y = monitor.bounding_box.height + monitor.bounding_box.y;
+        //             }
+        //         }
+        //     } else {
+        //         monitor.bar.y = -self.height;
+        //     }
+
+        // if self.show {
+        //     monitor.bounding_box.height -= self.height;
+        //     match monitor.bar.pos {
+        //         BarPosition::Top => {
+        //             monitor.bar.y = monitor.bounding_box.y;
+        //             monitor.bounding_box.y += self.height;
+        //         }
+        //         BarPosition::Bottom => {
+        //             monitor.bar.y = monitor.bounding_box.height + monitor.bounding_box.y;
+        //         }
+        //     }
+        // } else {
+        //     monitor.bar.y = -self.height;
+        // }
 
         Ok(())
     }

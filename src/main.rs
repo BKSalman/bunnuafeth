@@ -1,4 +1,4 @@
-use bunnuafeth::{run, wm::WM, Config, Hotkey, MouseHotkey, WMCommand};
+use bunnuafeth::{run, wm::WM, Config, Hotkey, MouseHotkey, WMCommand, RGBA};
 use x11rb::{
     connect,
     protocol::xproto::{ButtonIndex, ModMask},
@@ -48,8 +48,8 @@ fn main() {
 
     let mut wm = WM::new(conn, screen_num, config).expect("create drawable");
     // 6275a6
-    //                                red  green  blue
-    wm.set_root_background_color(0x00__62__75_____a6__).unwrap();
+    wm.set_root_background_color(RGBA::new(0x62, 0x75, 0xa6, 0).as_argb_u32())
+        .unwrap();
 
     wm.create_bar().unwrap();
     wm.bar.update_position(&wm).unwrap();
