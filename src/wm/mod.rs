@@ -3,35 +3,31 @@ use core::marker::PhantomData;
 use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap, HashSet},
-    process::Command,
 };
 use x11rb::{
     connection::Connection,
-    // TODO: use this
-    properties::WmHints,
     protocol::{
         glx::Window,
         xproto::{
-            AtomEnum, ButtonPressEvent, ButtonReleaseEvent, ChangeWindowAttributesAux, Circulate,
-            ClientMessageEvent, ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt,
-            CreateGCAux, CreateWindowAux, Cursor, DestroyNotifyEvent, EnterNotifyEvent, EventMask,
-            ExposeEvent, FontDraw, Gcontext, GetGeometryReply, GrabMode, InputFocus, KeyPressEvent,
-            MapRequestEvent, MapState, ModMask, MotionNotifyEvent, PropMode, Rectangle, Screen,
-            SetMode, StackMode, Timestamp, UnmapNotifyEvent, WindowClass,
+            AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux,
+            ConnectionExt, CreateGCAux, CreateWindowAux, Cursor, EventMask, FontDraw, Gcontext,
+            GetGeometryReply, GrabMode, InputFocus, MapState, ModMask, PropMode, Rectangle, Screen,
+            SetMode, StackMode, Timestamp, WindowClass,
         },
-        ErrorKind, Event,
+        ErrorKind,
     },
     rust_connection::ReplyError,
     wrapper::ConnectionExt as WrapperConnectionExt,
-    COPY_DEPTH_FROM_PARENT,
-    CURRENT_TIME,
-    NONE,
+    COPY_DEPTH_FROM_PARENT, CURRENT_TIME, NONE,
 };
 
 use crate::{
-    util::CommandExt, Bar, BarPosition, BunnuConnectionExt, Config, KeyMapping, WMCommand,
-    WindowState, XlibError, BAR_HEIGHT,
+    Bar, BarPosition, BunnuConnectionExt, Config, KeyMapping, WMCommand, WindowState, XlibError,
+    BAR_HEIGHT,
 };
+
+mod bar;
+mod events;
 
 pub const LEFT_PTR: u16 = 68;
 pub const SIZING: u16 = 120;
@@ -71,7 +67,7 @@ pub struct WM<'a, C: Connection> {
     config: Config,
     key_mapping: HashMap<KeyMapping, WMCommand>,
     button_mapping: HashMap<ButtonMapping, WMCommand>,
-    focused_window: Option<WindowState>,
+    pub focused_window: Option<WindowState>,
     last_timestamp: Timestamp,
 }
 
@@ -520,67 +516,6 @@ impl<'a, C: Connection> WM<'a, C> {
         })
     }
 
-    pub fn create_bar(&mut self) -> Result<(), XlibError> {
-        let bar_win_id = self.connection.generate_id()?;
-
-        let root = &self.connection.setup().roots[self.screen_num];
-
-        let window_aux = CreateWindowAux::new()
-            .event_mask(EventMask::BUTTON_PRESS | EventMask::EXPOSURE)
-            .override_redirect(Some(true.into()))
-            .background_pixel(root.white_pixel)
-            .cursor(self.cursors.hand);
-
-        self.connection.create_window(
-            COPY_DEPTH_FROM_PARENT,
-            bar_win_id,
-            root.root,
-            0, // self.bounding_box.x.try_into().unwrap(),
-            self.bar.y,
-            self.screen().width_in_pixels, // self.bounding_box.width.try_into().unwrap(),
-            self.bar.height,
-            0,
-            WindowClass::COPY_FROM_PARENT,
-            root.root_visual,
-            &window_aux,
-        )?;
-
-        self.bar.window = Some(bar_win_id);
-
-        self.connection.change_property8(
-            PropMode::REPLACE,
-            bar_win_id,
-            AtomEnum::WM_NAME,
-            AtomEnum::STRING,
-            "Bunnuafeth bar".as_bytes(),
-        )?;
-        self.connection.change_property8(
-            PropMode::REPLACE,
-            bar_win_id,
-            AtomEnum::WM_CLASS,
-            AtomEnum::STRING,
-            "bunnuafeth-bar".as_bytes(),
-        )?;
-
-        self.connection.change_property32(
-            PropMode::REPLACE,
-            bar_win_id,
-            self.atoms._NET_WM_WINDOW_TYPE,
-            AtomEnum::ATOM,
-            &[self.atoms._NET_WM_WINDOW_TYPE_DOCK],
-        )?;
-
-        tracing::debug!("mapping bar {bar_win_id}");
-        self.connection.map_window(bar_win_id)?;
-
-        let geom = self.connection.get_geometry(bar_win_id)?.reply()?;
-
-        self.windows
-            .push(WindowState::new(bar_win_id, &geom, true, WindowType::Dock));
-
-        Ok(())
-    }
-
     // pub fn load_font(&mut self, xft: &Xft, fontname: &str) -> *mut XftFont {
     //     unsafe {
     //         let xfont = (xft.XftFontOpenName)(
@@ -595,44 +530,6 @@ impl<'a, C: Connection> WM<'a, C> {
     //         xfont
     //     }
     // }
-
-    pub fn draw_bar(&self) -> Result<(), XlibError> {
-        if let Some(bar_window) = self.bar.window {
-            self.connection
-                .poly_fill_rectangle(
-                    bar_window,
-                    self.black_gc,
-                    &[Rectangle {
-                        x: self.bar.x,
-                        y: self.bar.y,
-                        width: self.bar.width,
-                        height: self.bar.height,
-                    }],
-                )?
-                .check()?;
-            if let Some(fw_state) = &self.focused_window {
-                let reply = self
-                    .connection
-                    .get_property(
-                        false,
-                        fw_state.window,
-                        AtomEnum::WM_NAME,
-                        AtomEnum::STRING,
-                        0,
-                        std::u32::MAX,
-                    )?
-                    .reply()?;
-                self.connection
-                    .image_text8(bar_window, self.black_gc, 1, 10, &reply.value)?
-                    .check()?;
-            } else {
-                self.connection
-                    .image_text8(bar_window, self.black_gc, 1, 10, b"something")?;
-            }
-        }
-
-        Ok(())
-    }
 
     // pub fn text_width(
     //     &self,
@@ -793,306 +690,12 @@ impl<'a, C: Connection> WM<'a, C> {
         Ok(())
     }
 
-    pub(crate) fn handle_event(&mut self, event: Event) -> Result<(), XlibError> {
-        let mut should_ignore = false;
-        if let Some(seqno) = event.wire_sequence_number() {
-            // Check sequences_to_ignore and remove entries with old (=smaller) numbers.
-            while let Some(&Reverse(to_ignore)) = self.sequences_to_ignore.peek() {
-                // Sequence numbers can wrap around, so we cannot simply check for
-                // "to_ignore <= seqno". This is equivalent to "to_ignore - seqno <= 0", which is what we
-                // check instead. Since sequence numbers are unsigned, we need a trick: We decide
-                // that values from [MAX/2, MAX] count as "<= 0" and the rest doesn't.
-                if to_ignore.wrapping_sub(seqno) <= u16::max_value() / 2 {
-                    // If the two sequence numbers are equal, this event should be ignored.
-                    should_ignore = to_ignore == seqno;
-                    break;
-                }
-                self.sequences_to_ignore.pop();
-            }
-        }
-
-        if !matches!(event, Event::MotionNotify(_)) {
-            tracing::debug!("got event {:?}", event);
-        }
-        if should_ignore {
-            tracing::debug!("[ignored]");
-            return Ok(());
-        }
-        match event {
-            Event::MapRequest(event) => self.handle_map_request(event)?,
-            Event::Expose(event) => self.handle_expose(event),
-            Event::DestroyNotify(event) => self.handle_destroy_notify(event)?,
-            Event::UnmapNotify(event) => self.handle_unmap_notify(event)?,
-            Event::ConfigureRequest(event) => self.handle_configure_request(event)?,
-            Event::EnterNotify(event) => self.handle_enter(event)?,
-            Event::LeaveNotify(event) => self.handle_leave(event)?,
-            Event::ButtonPress(event) => self.handle_button_press(event)?,
-            Event::ButtonRelease(event) => self.handle_button_release(event)?,
-            Event::MotionNotify(event) => self.handle_motion_notify(event)?,
-            Event::KeyPress(event) => self.handle_key_press(event)?,
-            _ => {}
-        }
-
-        Ok(())
-    }
-
-    fn handle_configure_request(&mut self, event: ConfigureRequestEvent) -> Result<(), ReplyError> {
-        // Allow clients to change everything, except sibling / stack mode
-        let aux = ConfigureWindowAux::from_configure_request(&event)
-            .sibling(None)
-            .stack_mode(None);
-        tracing::debug!("configure: {:?}", aux);
-        self.connection.configure_window(event.window, &aux)?;
-        Ok(())
-    }
-
-    fn handle_expose(&mut self, event: ExposeEvent) {
-        self.pending_expose.insert(event.window);
-    }
-
-    fn handle_map_request(&mut self, event: MapRequestEvent) -> Result<(), XlibError> {
-        self.manage_window(
-            event.window,
-            &self.connection.get_geometry(event.window)?.reply()?,
-        )
-    }
-
-    fn handle_button_press(&mut self, event: ButtonPressEvent) -> Result<(), XlibError> {
-        let button_mapping = ButtonMapping::new(event.detail, u16::from(event.state));
-
-        if let Some(command) = self.button_mapping.get(&button_mapping) {
-            match command {
-                WMCommand::Execute(_) => todo!(),
-                WMCommand::CloseWindow => todo!(),
-                WMCommand::MoveWindow => {
-                    tracing::debug!("move event: {}", event.child);
-                    if let Some(win_state) = self.find_window_by_id(event.child) {
-                        let window = win_state.window;
-                        self.conditionally_grab_pointer(window)?;
-
-                        let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
-                        self.connection.change_window_attributes(window, &change)?;
-                        let geometry = self.connection.get_geometry(window)?.reply()?;
-                        self.drag_window = Some((
-                            window,
-                            (geometry.x - event.event_x, geometry.y - event.event_y),
-                        ));
-                        self.raise_window(window)?;
-                    }
-                }
-                WMCommand::ResizeWindow(_) => {
-                    if let Some(win_state) = self.find_window_by_id(event.child) {
-                        let window = win_state.window;
-                        self.conditionally_grab_pointer(window)?;
-                        let change = ChangeWindowAttributesAux::new().cursor(self.cursors.resize);
-                        self.connection.change_window_attributes(window, &change)?;
-
-                        let geometry = self.connection.get_geometry(window)?.reply()?;
-                        self.resize_window = Some((
-                            window,
-                            (
-                                (geometry.width, geometry.height),
-                                (geometry.x - event.event_x, geometry.y - event.event_y),
-                            ),
-                        ));
-                        self.raise_window(window)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_button_release(&mut self, _event: ButtonReleaseEvent) -> Result<(), XlibError> {
-        if let Some(drag_window) = self.drag_window {
-            let change = ChangeWindowAttributesAux::new().cursor(self.cursors.normal);
-            self.connection
-                .change_window_attributes(drag_window.0, &change)?;
-        }
-        if let Some(resize_window) = self.resize_window {
-            let change = ChangeWindowAttributesAux::new().cursor(self.cursors.normal);
-            self.connection
-                .change_window_attributes(resize_window.0, &change)?;
-        }
-
-        self.drag_window = None;
-        self.resize_window = None;
-        self.pointer_grabbed = false;
-        self.connection.ungrab_pointer(CURRENT_TIME)?;
-        Ok(())
-    }
-
-    fn handle_key_press(&mut self, event: KeyPressEvent) -> Result<(), XlibError> {
-        let key_mapping = KeyMapping {
-            code: event.detail,
-            mods: u16::from(event.state),
-        };
-
-        if let Some(command) = self.key_mapping.get(&key_mapping) {
-            match command {
-                WMCommand::Execute(command) => {
-                    // TODO: does this work like bash?
-                    let mut command = command.split(' ');
-                    if let Some(program) = command.next() {
-                        if let Err(e) = Command::new(program)
-                            .with_args(command.collect::<Vec<&str>>())
-                            .spawn()
-                        {
-                            tracing::error!("command failed: {e}");
-                        }
-                    }
-                }
-                WMCommand::CloseWindow => {
-                    if let Some(state) = &self
-                        .focused_window
-                        .as_ref()
-                        .and_then(|fw| self.find_window_by_id(fw.window))
-                    {
-                        if state.window == self.screen().root {
-                            return Ok(());
-                        }
-
-                        self.send_delete(state.window)?;
-                    }
-                }
-                WMCommand::MoveWindow => {
-                    let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
-                    self.connection
-                        .change_window_attributes(event.event, &change)?;
-                    if let Some(state) = self.find_window_by_id(event.event) {
-                        if self.drag_window.is_none() {
-                            let (x, y) = (-event.event_x, -event.event_y);
-                            self.drag_window = Some((state.window, (x, y)));
-                        }
-                    }
-                }
-                WMCommand::ResizeWindow(_factor) => todo!(),
-            };
-        }
-
-        Ok(())
-    }
-
-    fn handle_unmap_notify(&mut self, event: UnmapNotifyEvent) -> Result<(), XlibError> {
-        let root = self.screen().root;
-        self.focus_window(FocusWindow::Root(root))?;
-        self.windows.retain(|state| {
-            if state.window != event.window {
-                return true;
-            }
-            self.connection
-                .change_save_set(SetMode::DELETE, state.window)
-                .unwrap();
-            self.connection
-                .reparent_window(state.window, root, state.x, state.y)
-                .unwrap();
-            false
-        });
-
-        Ok(())
-    }
-
-    fn handle_motion_notify(&mut self, event: MotionNotifyEvent) -> Result<(), ReplyError> {
-        // limit the amount of requests for less CPU usage
-        if event.time - self.last_timestamp <= (1000 / 60) {
-            return Ok(());
-        }
-        self.last_timestamp = event.time;
-
-        if let Some((win, (x, y))) = self.drag_window {
-            let (x, y) = (x + event.root_x, y + event.root_y);
-            self.connection
-                .configure_window(win, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
-            if let Some(state) = self.find_window_by_id_mut(win) {
-                state.x = x;
-                state.y = y;
-            }
-        } else if let Some((win, ((width, height), (x, y)))) = self.resize_window {
-            let (width, height) = (
-                width as i16 + x + event.event_x,
-                height as i16 + y + event.event_y,
-            );
-            self.connection.configure_window(
-                win,
-                &ConfigureWindowAux::new()
-                    .width(width as u32)
-                    .height(height as u32),
-            )?;
-            if let Some(state) = self.find_window_by_id_mut(win) {
-                state.width = width as u16;
-                state.height = height as u16;
-            }
-        }
-        Ok(())
-    }
-
-    fn handle_enter(&mut self, event: EnterNotifyEvent) -> Result<(), XlibError> {
-        // TODO: can I remove this clone?
-        let win = self.find_window_by_id(event.event).cloned();
-        tracing::debug!("focusing {win:?}");
-        self.focus_window(FocusWindow::Normal(win.as_ref()))?;
-        // TODO: add border when focusing window
-        // let change = ChangeWindowAttributesAux::new().border_pixel(self.black_gc);
-        // self.connection.change_window_attributes(event.event)
-        Ok(())
-    }
-
-    fn handle_leave(&mut self, event: EnterNotifyEvent) -> Result<(), XlibError> {
-        if let Some((win, focused_window)) = self
-            .find_window_by_id(event.event)
-            .zip(self.focused_window.as_ref())
-        {
-            if focused_window.window == win.window {
-                tracing::debug!("unfocusing {win:?} and focusing root window");
-                let root = self.screen().root;
-                self.focus_window(FocusWindow::Root(root)).unwrap();
-            }
-        }
-
-        Ok(())
-    }
-
-    fn handle_destroy_notify(&mut self, event: DestroyNotifyEvent) -> Result<(), XlibError> {
-        let root = self.screen().root;
-        self.windows.retain(|state| {
-            if state.window != event.window {
-                return true;
-            }
-            self.connection
-                .change_save_set(SetMode::DELETE, state.window)
-                .unwrap();
-            self.connection
-                .reparent_window(state.window, root, state.x, state.y)
-                .unwrap();
-            // self.connection.destroy_window(state.frame_window).unwrap();
-            false
-        });
-
-        let managed: Vec<_> = self.windows.iter().map(|w| w.window).collect();
-
-        self.connection.change_property32(
-            PropMode::REPLACE,
-            self.screen().root,
-            self.atoms._NET_CLIENT_LIST,
-            AtomEnum::WINDOW,
-            managed.as_slice(),
-        )?;
-
-        if let Some(fw) = &self.focused_window {
-            if fw.window == event.window {
-                let next_window = self.next_window();
-
-                // TODO: can I remove this clone?
-                self.focus_window(FocusWindow::Normal(next_window.cloned().as_ref()))?;
-            }
-        }
-
-        Ok(())
-    }
-
     fn next_window(&self) -> Option<&WindowState> {
         // TODO: make this better
-        self.windows.iter().filter(|w| !w.is_bar).next_back()
+        self.windows
+            .iter()
+            .filter(|w| w.r#type != WindowType::Dock)
+            .next_back()
     }
 
     fn focus_window(&mut self, window: FocusWindow) -> Result<(), XlibError> {
@@ -1110,7 +713,9 @@ impl<'a, C: Connection> WM<'a, C> {
                         .set_input_focus(InputFocus::NONE, win.window, CURRENT_TIME)?;
                 }
                 if let Some(fw) = &self.focused_window {
-                    if win.is_some_and(|win| fw.window != win.window) || win.is_none() {
+                    if (win.is_some_and(|win| fw.window != win.window) || win.is_none())
+                        && fw.r#type == WindowType::Normal
+                    {
                         let change = ChangeWindowAttributesAux::new()
                             .border_pixel(RGBA::BLACK.as_argb_u32());
                         self.connection
@@ -1134,9 +739,11 @@ impl<'a, C: Connection> WM<'a, C> {
     pub fn set_background_color(&self, window: Window, color: u32) -> Result<(), XlibError> {
         let change = ChangeWindowAttributesAux::new().background_pixel(color);
         self.connection.change_window_attributes(window, &change)?;
+
         let window_state = self
             .find_window_by_id(window)
             .ok_or(XlibError::WindowNotFound)?;
+
         self.connection.clear_area(
             false,
             window,
@@ -1152,9 +759,12 @@ impl<'a, C: Connection> WM<'a, C> {
     pub fn set_root_background_color(&self, color: u32) -> Result<(), XlibError> {
         let screen = self.screen();
         let change = ChangeWindowAttributesAux::new().background_pixel(color);
+
         self.connection
             .change_window_attributes(screen.root, &change)?;
+
         let root_geometry = self.connection.get_geometry(screen.root)?.reply()?;
+
         self.connection.clear_area(
             false,
             screen.root,
@@ -1247,9 +857,6 @@ impl<'a, C: Connection> WM<'a, C> {
                 32 * 4,
             )?
             .reply()?;
-
-        println!("format: {}", window_types.format);
-        println!("value length: {}", window_types.value_len);
 
         let values = window_types.value32();
 

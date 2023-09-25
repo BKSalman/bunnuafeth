@@ -212,7 +212,6 @@ pub struct WindowState {
     height: u16,
     pub window: Window,
     r#type: WindowType,
-    is_bar: bool,
 }
 
 impl WindowState {
@@ -228,22 +227,21 @@ impl WindowState {
             y: geom.y,
             width: geom.width,
             height: geom.height,
-            is_bar,
             r#type,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WindowType {
     Desktop,
-    Dock,
-    Toolbar,
-    Menu,
-    Utility,
-    Splash,
     Dialog,
+    Dock,
+    Menu,
     Normal,
+    Splash,
+    Toolbar,
+    Utility,
 }
 
 #[derive(Default)]
