@@ -135,7 +135,7 @@ impl<'a, C: Connection> WM<'a, C> {
         let geom = self.connection.get_geometry(bar_win_id)?.reply()?;
 
         self.windows
-            .push(WindowState::new(bar_win_id, &geom, true, WindowType::Dock));
+            .push(WindowState::new(bar_win_id, &geom, WindowType::Dock));
 
         Ok(())
     }

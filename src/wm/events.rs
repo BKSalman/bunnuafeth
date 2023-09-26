@@ -1,13 +1,13 @@
-use crate::ButtonMapping;
+use crate::{ButtonMapping, WindowState};
 use std::{cmp::Reverse, process::Command};
 use x11rb::{
     connection::Connection,
     protocol::{
         xproto::{
             AtomEnum, ButtonPressEvent, ButtonReleaseEvent, ChangeWindowAttributesAux,
-            ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt, DestroyNotifyEvent,
-            EnterNotifyEvent, ExposeEvent, KeyPressEvent, MapRequestEvent, MotionNotifyEvent,
-            PropMode, SetMode, UnmapNotifyEvent,
+            ClientMessageEvent, ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt,
+            DestroyNotifyEvent, EnterNotifyEvent, ExposeEvent, KeyPressEvent, MapRequestEvent,
+            MotionNotifyEvent, PropMode, SetMode, UnmapNotifyEvent,
         },
         Event,
     },
@@ -313,6 +313,46 @@ impl<'a, C: Connection> WM<'a, C> {
                 // TODO: can I remove this clone?
                 self.focus_window(FocusWindow::Normal(next_window.cloned().as_ref()))?;
             }
+        }
+
+        Ok(())
+    }
+
+    fn handle_client_message(&mut self, event: ClientMessageEvent) -> Result<(), XlibError> {
+        if event.type_ == self.atoms._NET_WM_STATE {
+            let data = event.data.as_data32();
+
+            // https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html#idm45798289450576
+
+            // 0 = remove, 1 = add, 2 = toggle
+            let action = data[0];
+            // This message allows two properties to be changed simultaneously,
+            // specifically to allow both horizontal and vertical maximization to be altered together
+            let first_property = data[1];
+            let second_property = data[2];
+
+            let atoms = self.atoms;
+
+            if let Some(win_state) = self.find_window_by_id_mut(event.window) {
+                let action = WindowState::get_property_action(action)?;
+                WindowState::set_window_property(
+                    atoms,
+                    first_property,
+                    &action,
+                    &mut win_state.properties,
+                );
+                WindowState::set_window_property(
+                    atoms,
+                    second_property,
+                    &action,
+                    &mut win_state.properties,
+                );
+                tracing::debug!("new window state: {:?}", win_state);
+            }
+
+            // whether the source is an application or direct user actions
+            // TODO: I don't know what to do with it yet
+            // let source_indication = data[3];
         }
 
         Ok(())

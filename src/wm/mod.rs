@@ -26,7 +26,6 @@ use crate::{
     BAR_HEIGHT,
 };
 
-mod bar;
 mod events;
 
 pub const LEFT_PTR: u16 = 68;
@@ -671,12 +670,8 @@ impl<'a, C: Connection> WM<'a, C> {
 
         let window_type = self.get_window_type(window)?;
 
-        let window_state = WindowState::new(
-            window,
-            geom,
-            false,
-            window_type.unwrap_or(WindowType::Normal),
-        );
+        let window_state =
+            WindowState::new(window, geom, window_type.unwrap_or(WindowType::Normal));
 
         self.focus_window(FocusWindow::Normal(Some(&window_state)))?;
         self.windows.push(window_state);
@@ -889,6 +884,9 @@ impl<'a, C: Connection> WM<'a, C> {
             Ok(None)
         }
     }
+
+    // TODO: use this when managing a window
+    fn get_initial_window_properties(&self) {}
 }
 
 enum FocusWindow<'a> {
