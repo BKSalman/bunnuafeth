@@ -15,6 +15,7 @@ fn init_tracing() {
 
 fn main() {
     init_tracing();
+
     tracing::info!("Connecting to x11 server");
     let (connection, screen_num) = connect(None).expect("connect to X11 server");
 
@@ -48,7 +49,7 @@ fn main() {
 
     let mut wm = WM::new(conn, screen_num, config).expect("create drawable");
     // 6275a6
-    wm.set_root_background_color(RGBA::new(0x62, 0x75, 0xa6, 0).as_argb_u32())
+    wm.set_root_background_color(RGBA::new(0xff, 0, 0, 0).as_argb_u32())
         .unwrap();
 
     wm.create_bar().unwrap();

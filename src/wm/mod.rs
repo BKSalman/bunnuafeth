@@ -1,7 +1,7 @@
 use crate::{
     atoms::Atoms,
     connection_wrapper::ConnWrapper,
-    layout::{Layout, LayoutManager, TiledLayout},
+    layout::{EdgeDimensions, Layout, LayoutManager, ReservedEdges, TiledLayout},
     ButtonMapping, WindowType, RGBA,
 };
 use core::marker::PhantomData;
@@ -17,19 +17,16 @@ use x11rb::{
             AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux,
             ConnectionExt, CreateGCAux, CreateWindowAux, Cursor, EventMask, FontDraw, Gcontext,
             GetGeometryReply, GrabMode, InputFocus, MapState, ModMask, PropMode, Screen, SetMode,
-            StackMode, Timestamp,
+            StackMode, Timestamp, WindowClass,
         },
         ErrorKind,
     },
     rust_connection::ReplyError,
     wrapper::ConnectionExt as WrapperConnectionExt,
-    CURRENT_TIME, NONE,
+    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
 };
 
-use crate::{
-    Bar, BarPosition, BunnuConnectionExt, Config, KeyMapping, WMCommand, WindowState, XlibError,
-    BAR_HEIGHT,
-};
+use crate::{Bar, BarPosition, Config, KeyMapping, WMCommand, WindowState, XlibError, BAR_HEIGHT};
 
 mod events;
 
@@ -37,7 +34,7 @@ pub const LEFT_PTR: u16 = 68;
 pub const SIZING: u16 = 120;
 pub const FLEUR: u16 = 52;
 pub const HAND: u16 = 60;
-const BORDER_WIDTH: u32 = 5;
+pub const BORDER_WIDTH: u32 = 5;
 
 pub struct Cursors {
     pub normal: Cursor,
@@ -248,6 +245,7 @@ impl<'a, C: Connection> WM<'a, C> {
             last_timestamp: CURRENT_TIME,
             layout_manager: LayoutManager {
                 layout: Layout::Tiled(TiledLayout::MainStack),
+                reserved: ReservedEdges::default(),
             },
         })
     }
@@ -298,7 +296,8 @@ impl<'a, C: Connection> WM<'a, C> {
 
         let win_id = self.conn_wrapper.connection.generate_id()?;
 
-        self.conn_wrapper.connection.bunnu_create_simple_window(
+        self.conn_wrapper.connection.create_window(
+            COPY_DEPTH_FROM_PARENT,
             win_id,
             screen.root,
             0,
@@ -306,6 +305,8 @@ impl<'a, C: Connection> WM<'a, C> {
             1,
             1,
             0,
+            WindowClass::INPUT_OUTPUT,
+            COPY_FROM_PARENT,
             &create_window,
         )?;
 
@@ -703,7 +704,74 @@ impl<'a, C: Connection> WM<'a, C> {
 
         let window_type = self.get_window_type(window)?;
 
-        let win_state = WindowState::new(window, geom, window_type.unwrap_or(WindowType::Normal));
+        tracing::debug!("window type: {window_type:?}");
+
+        let window_type = window_type.unwrap_or(WindowType::Normal);
+
+        if window_type == WindowType::Dock {
+            let reserved_space = self
+                .conn_wrapper
+                .connection
+                .get_property(
+                    false,
+                    window,
+                    self.conn_wrapper.atoms._NET_WM_STRUT_PARTIAL,
+                    AtomEnum::CARDINAL,
+                    0,
+                    12,
+                )?
+                .reply()?;
+
+            let reserved_space = reserved_space.value32();
+
+            if let Some(reserved_space) = reserved_space {
+                let reserved_space: Vec<u32> = reserved_space.collect();
+                let left_width = reserved_space[0];
+                let left_start_y = reserved_space[4];
+                let left_end_y = reserved_space[5];
+                let left = EdgeDimensions {
+                    width: left_width,
+                    start: left_start_y,
+                    end: left_end_y,
+                };
+
+                let right_width = reserved_space[1];
+                let right_start_y = reserved_space[6];
+                let right_end_y = reserved_space[7];
+                let right = EdgeDimensions {
+                    width: right_width,
+                    start: right_start_y,
+                    end: right_end_y,
+                };
+
+                let top_width = reserved_space[2];
+                let top_start_x = reserved_space[8];
+                let top_end_x = reserved_space[9];
+                let top = EdgeDimensions {
+                    width: top_width,
+                    start: top_start_x,
+                    end: top_end_x,
+                };
+
+                let bottom_width = reserved_space[3];
+                let bottom_start_x = reserved_space[10];
+                let bottom_end_x = reserved_space[11];
+                let bottom = EdgeDimensions {
+                    width: bottom_width,
+                    start: bottom_start_x,
+                    end: bottom_end_x,
+                };
+
+                self.layout_manager.reserved = ReservedEdges {
+                    top,
+                    right,
+                    left,
+                    bottom,
+                };
+            }
+        }
+
+        let win_state = WindowState::new(window, geom, window_type, false);
 
         if let Some(fsw_state) = self.windows.iter().find(|w| w.properties.is_fullscreen) {
             let configure = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
@@ -714,6 +782,30 @@ impl<'a, C: Connection> WM<'a, C> {
             self.focus_window(FocusWindow::Normal(Some(&win_state)))?;
         }
         self.windows.push(win_state);
+
+        let screen = self.screen();
+        if let Some(new_windows) = self.layout_manager.calculate_dimensions(
+            self.windows
+                .iter()
+                .filter(|w| w.r#type == WindowType::Normal)
+                .cloned()
+                .collect(),
+            screen.width_in_pixels,
+            screen.height_in_pixels,
+        ) {
+            for win_state in new_windows.iter() {
+                // TODO: configure x and y
+                let configure = ConfigureWindowAux::new()
+                    .width(win_state.width as u32)
+                    .height(win_state.height as u32)
+                    .x(win_state.x as i32)
+                    .y(win_state.y as i32);
+                self.conn_wrapper
+                    .connection
+                    .configure_window(win_state.window, &configure)?;
+            }
+            self.windows = new_windows;
+        }
 
         Ok(())
     }
@@ -735,9 +827,7 @@ impl<'a, C: Connection> WM<'a, C> {
 
                     self.conn_wrapper
                         .connection
-                        .change_window_attributes(win.window, &change)?
-                        .check()
-                        .unwrap();
+                        .change_window_attributes(win.window, &change)?;
                     self.conn_wrapper.connection.set_input_focus(
                         InputFocus::NONE,
                         win.window,

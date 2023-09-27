@@ -10,7 +10,7 @@ use x11rb::{
     COPY_DEPTH_FROM_PARENT,
 };
 
-use crate::{wm::WM, Monitor, WindowState, WindowType, XlibError};
+use crate::{wm::WM, WindowState, WindowType, XlibError, BAR_HEIGHT};
 
 pub struct Bar<'a, C: Connection> {
     pub window: Option<Window>,
@@ -129,6 +129,39 @@ impl<'a, C: Connection> WM<'a, C> {
             &[self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE_DOCK],
         )?;
 
+        self.conn_wrapper.connection.change_property32(
+            PropMode::REPLACE,
+            bar_win_id,
+            self.conn_wrapper.atoms._NET_WM_STRUT_PARTIAL,
+            AtomEnum::CARDINAL,
+            &[
+                // left
+                0,
+                // right
+                0,
+                // top
+                BAR_HEIGHT as u32,
+                // bottom
+                0,
+                // left_start_y
+                0,
+                // left_end_y
+                0,
+                // right_start_y
+                0,
+                // right_end_y
+                0,
+                // top_start_x
+                0,
+                // top_end_x
+                self.screen().width_in_pixels as u32,
+                // bottom_start_x
+                0,
+                // bottom_end_x
+                0,
+            ],
+        )?;
+
         tracing::debug!("mapping bar {bar_win_id}");
         self.conn_wrapper.connection.map_window(bar_win_id)?;
 
@@ -139,7 +172,7 @@ impl<'a, C: Connection> WM<'a, C> {
             .reply()?;
 
         self.windows
-            .push(WindowState::new(bar_win_id, &geom, WindowType::Dock));
+            .push(WindowState::new(bar_win_id, &geom, WindowType::Dock, false));
 
         Ok(())
     }

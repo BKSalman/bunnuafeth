@@ -92,6 +92,7 @@
 
               shellHook = ''
                 source .nixos-vm/vm.sh
+                alias cargo="RUST_LOG=debug DISPLAY=:2 cargo"
               '';
 
               inherit GIT_HASH;

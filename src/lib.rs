@@ -8,11 +8,8 @@ use wm::WM;
 use x11rb::protocol::{randr::ConnectionExt, xproto::ButtonIndex};
 use x11rb::{
     connection::Connection,
-    protocol::xproto::{
-        ConnectionExt as XlibConnectionExt, CreateWindowAux, GetGeometryReply, ModMask, Window,
-        WindowClass,
-    },
-    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME,
+    protocol::xproto::{GetGeometryReply, ModMask, Window},
+    CURRENT_TIME,
 };
 
 mod atoms;
@@ -80,53 +77,6 @@ impl Into<u32> for RGBA {
             | ((self.red as u32) << 16)
             | ((self.green as u32) << 8)
             | (self.blue as u32)
-    }
-}
-
-pub trait BunnuConnectionExt {
-    fn bunnu_create_simple_window(
-        &self,
-        win_id: u32,
-        parent: u32,
-        x: i16,
-        y: i16,
-        width: u16,
-        height: u16,
-        border_width: u16,
-        value_list: &CreateWindowAux,
-    ) -> Result<(), XlibError>;
-}
-
-impl<C> BunnuConnectionExt for C
-where
-    C: Connection,
-{
-    fn bunnu_create_simple_window(
-        &self,
-        win_id: u32,
-        parent: u32,
-        x: i16,
-        y: i16,
-        width: u16,
-        height: u16,
-        border_width: u16,
-        value_list: &CreateWindowAux,
-    ) -> Result<(), XlibError> {
-        self.create_window(
-            COPY_DEPTH_FROM_PARENT,
-            win_id,
-            parent,
-            x,
-            y,
-            width,
-            height,
-            border_width,
-            WindowClass::INPUT_OUTPUT,
-            COPY_FROM_PARENT,
-            value_list,
-        )?;
-
-        Ok(())
     }
 }
 
@@ -322,10 +272,16 @@ pub struct WindowState {
     pub window: Window,
     r#type: WindowType,
     properties: WindowProperties,
+    is_floating: bool,
 }
 
 impl WindowState {
-    fn new(window: Window, geom: &GetGeometryReply, r#type: WindowType) -> WindowState {
+    fn new(
+        window: Window,
+        geom: &GetGeometryReply,
+        r#type: WindowType,
+        is_floating: bool,
+    ) -> WindowState {
         WindowState {
             window,
             x: geom.x,
@@ -334,6 +290,7 @@ impl WindowState {
             height: geom.height,
             r#type,
             properties: WindowProperties::default(),
+            is_floating: false,
         }
     }
 

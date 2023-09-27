@@ -53,6 +53,7 @@ x11rb::atom_manager! {
         _NET_WM_DESKTOP,
         _NET_WM_STRUT,
         _NET_FRAME_EXTENTS,
+        _NET_WM_STRUT_PARTIAL,
 
         _NET_WM_NAME,
 
