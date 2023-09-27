@@ -33,7 +33,7 @@ fn main() {
             WMCommand::Execute(String::from("xprop")),
         ),
         Hotkey::new(ModMask::M1, x11_keysyms::XK_c, WMCommand::CloseWindow),
-        Hotkey::new(ModMask::M1, x11_keysyms::XK_Alt_L, WMCommand::MoveWindow),
+        Hotkey::new(ModMask::M1, x11_keysyms::XK_f, WMCommand::ToggleFullscreen),
     ];
 
     let mouse_hotkeys = vec![

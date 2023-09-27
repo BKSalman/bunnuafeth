@@ -80,9 +80,9 @@ pub enum BarPosition {
 
 impl<'a, C: Connection> WM<'a, C> {
     pub fn create_bar(&mut self) -> Result<(), XlibError> {
-        let bar_win_id = self.connection.generate_id()?;
+        let bar_win_id = self.conn_wrapper.connection.generate_id()?;
 
-        let root = &self.connection.setup().roots[self.screen_num];
+        let root = &self.conn_wrapper.connection.setup().roots[self.screen_num];
 
         let window_aux = CreateWindowAux::new()
             .event_mask(EventMask::BUTTON_PRESS | EventMask::EXPOSURE)
@@ -90,7 +90,7 @@ impl<'a, C: Connection> WM<'a, C> {
             .background_pixel(root.white_pixel)
             .cursor(self.cursors.hand);
 
-        self.connection.create_window(
+        self.conn_wrapper.connection.create_window(
             COPY_DEPTH_FROM_PARENT,
             bar_win_id,
             root.root,
@@ -106,14 +106,14 @@ impl<'a, C: Connection> WM<'a, C> {
 
         self.bar.window = Some(bar_win_id);
 
-        self.connection.change_property8(
+        self.conn_wrapper.connection.change_property8(
             PropMode::REPLACE,
             bar_win_id,
             AtomEnum::WM_NAME,
             AtomEnum::STRING,
             "Bunnuafeth bar".as_bytes(),
         )?;
-        self.connection.change_property8(
+        self.conn_wrapper.connection.change_property8(
             PropMode::REPLACE,
             bar_win_id,
             AtomEnum::WM_CLASS,
@@ -121,18 +121,22 @@ impl<'a, C: Connection> WM<'a, C> {
             "bunnuafeth-bar".as_bytes(),
         )?;
 
-        self.connection.change_property32(
+        self.conn_wrapper.connection.change_property32(
             PropMode::REPLACE,
             bar_win_id,
-            self.atoms._NET_WM_WINDOW_TYPE,
+            self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE,
             AtomEnum::ATOM,
-            &[self.atoms._NET_WM_WINDOW_TYPE_DOCK],
+            &[self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE_DOCK],
         )?;
 
         tracing::debug!("mapping bar {bar_win_id}");
-        self.connection.map_window(bar_win_id)?;
+        self.conn_wrapper.connection.map_window(bar_win_id)?;
 
-        let geom = self.connection.get_geometry(bar_win_id)?.reply()?;
+        let geom = self
+            .conn_wrapper
+            .connection
+            .get_geometry(bar_win_id)?
+            .reply()?;
 
         self.windows
             .push(WindowState::new(bar_win_id, &geom, WindowType::Dock));
@@ -142,7 +146,8 @@ impl<'a, C: Connection> WM<'a, C> {
 
     pub fn draw_bar(&self) -> Result<(), XlibError> {
         if let Some(bar_window) = self.bar.window {
-            self.connection
+            self.conn_wrapper
+                .connection
                 .poly_fill_rectangle(
                     bar_window,
                     self.black_gc,
@@ -156,6 +161,7 @@ impl<'a, C: Connection> WM<'a, C> {
                 .check()?;
             if let Some(fw_state) = &self.focused_window {
                 let reply = self
+                    .conn_wrapper
                     .connection
                     .get_property(
                         false,
@@ -166,12 +172,18 @@ impl<'a, C: Connection> WM<'a, C> {
                         std::u32::MAX,
                     )?
                     .reply()?;
-                self.connection
+                self.conn_wrapper
+                    .connection
                     .image_text8(bar_window, self.black_gc, 1, 10, &reply.value)?
                     .check()?;
             } else {
-                self.connection
-                    .image_text8(bar_window, self.black_gc, 1, 10, b"something")?;
+                self.conn_wrapper.connection.image_text8(
+                    bar_window,
+                    self.black_gc,
+                    1,
+                    10,
+                    b"something",
+                )?;
             }
         }
 

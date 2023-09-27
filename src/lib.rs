@@ -17,6 +17,8 @@ use x11rb::{
 
 mod atoms;
 mod bar;
+mod connection_wrapper;
+pub mod layout;
 mod util;
 pub mod wm;
 
@@ -135,6 +137,7 @@ pub enum WMCommand {
     MoveWindow,
     /// the parameter here is not needed for mouse resizing
     ResizeWindow(i16),
+    ToggleFullscreen,
 }
 
 pub struct Config {
@@ -528,8 +531,9 @@ impl<'a, C: Connection> Monitor<'a, C> {
     }
 
     pub fn get_monitors(wm: &WM<'a, C>) -> Result<Vec<Monitor<'a, C>>, XlibError> {
-        let root = &wm.connection.setup().roots[wm.screen_num];
+        let root = wm.screen();
         let monitors = wm
+            .conn_wrapper
             .connection
             .randr_get_monitors(root.root, true)?
             .reply()?
@@ -539,6 +543,7 @@ impl<'a, C: Connection> Monitor<'a, C> {
             .iter()
             .map(|m| {
                 let output_info = wm
+                    .conn_wrapper
                     .connection
                     .randr_get_output_info(
                         *m.outputs.first().expect("monitor output"),
@@ -547,6 +552,7 @@ impl<'a, C: Connection> Monitor<'a, C> {
                     .reply()?;
 
                 let crtc = wm
+                    .conn_wrapper
                     .connection
                     .randr_get_crtc_info(output_info.crtc, CURRENT_TIME)?
                     .reply()?;
@@ -579,9 +585,9 @@ pub fn run<C: Connection>(mut wm: WM<'_, C>) -> Result<(), XlibError> {
 
     loop {
         wm.refresh();
-        wm.connection.flush()?;
+        wm.conn_wrapper.connection.flush()?;
 
-        let event = wm.connection.wait_for_event()?;
+        let event = wm.conn_wrapper.connection.wait_for_event()?;
         let mut event_option = Some(event);
         while let Some(event) = event_option {
             // if let x11rb::protocol::Event::ClientMessage(_) = event {
@@ -590,7 +596,7 @@ pub fn run<C: Connection>(mut wm: WM<'_, C>) -> Result<(), XlibError> {
             // }
 
             wm.handle_event(event)?;
-            event_option = wm.connection.poll_for_event()?;
+            event_option = wm.conn_wrapper.connection.poll_for_event()?;
         }
     }
 }

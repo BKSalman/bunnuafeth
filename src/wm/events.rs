@@ -7,7 +7,7 @@ use x11rb::{
             AtomEnum, ButtonPressEvent, ButtonReleaseEvent, ChangeWindowAttributesAux,
             ClientMessageEvent, ConfigureRequestEvent, ConfigureWindowAux, ConnectionExt,
             DestroyNotifyEvent, EnterNotifyEvent, ExposeEvent, KeyPressEvent, MapRequestEvent,
-            MotionNotifyEvent, PropMode, SetMode, UnmapNotifyEvent,
+            MotionNotifyEvent, PropMode, SetMode, UnmapNotifyEvent, Window,
         },
         Event,
     },
@@ -58,6 +58,7 @@ impl<'a, C: Connection> WM<'a, C> {
             Event::ButtonRelease(event) => self.handle_button_release(event)?,
             Event::MotionNotify(event) => self.handle_motion_notify(event)?,
             Event::KeyPress(event) => self.handle_key_press(event)?,
+            Event::ClientMessage(event) => self.handle_client_message(event)?,
             _ => {}
         }
 
@@ -70,7 +71,9 @@ impl<'a, C: Connection> WM<'a, C> {
             .sibling(None)
             .stack_mode(None);
         tracing::debug!("configure: {:?}", aux);
-        self.connection.configure_window(event.window, &aux)?;
+        self.conn_wrapper
+            .connection
+            .configure_window(event.window, &aux)?;
         Ok(())
     }
 
@@ -81,7 +84,11 @@ impl<'a, C: Connection> WM<'a, C> {
     fn handle_map_request(&mut self, event: MapRequestEvent) -> Result<(), XlibError> {
         self.manage_window(
             event.window,
-            &self.connection.get_geometry(event.window)?.reply()?,
+            &self
+                .conn_wrapper
+                .connection
+                .get_geometry(event.window)?
+                .reply()?,
         )
     }
 
@@ -93,13 +100,25 @@ impl<'a, C: Connection> WM<'a, C> {
                 WMCommand::Execute(_) => todo!(),
                 WMCommand::CloseWindow => todo!(),
                 WMCommand::MoveWindow => {
-                    if let Some(win_state) = self.find_window_by_id(event.child).cloned() {
+                    if let Some(win_state) = self
+                        .windows
+                        .iter()
+                        .find(|w| w.window == event.child)
+                        .cloned()
+                    {
+                        if !self.can_move(win_state.window) {
+                            return Ok(());
+                        }
+
                         let window = win_state.window;
                         self.conditionally_grab_pointer(window)?;
 
                         let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
-                        self.connection.change_window_attributes(window, &change)?;
-                        let geometry = self.connection.get_geometry(window)?.reply()?;
+                        self.conn_wrapper
+                            .connection
+                            .change_window_attributes(window, &change)?;
+                        let geometry =
+                            self.conn_wrapper.connection.get_geometry(window)?.reply()?;
                         self.drag_window = Some((
                             window,
                             (geometry.x - event.event_x, geometry.y - event.event_y),
@@ -109,13 +128,20 @@ impl<'a, C: Connection> WM<'a, C> {
                     }
                 }
                 WMCommand::ResizeWindow(_) => {
-                    if let Some(win_state) = self.find_window_by_id(event.child) {
+                    if let Some(win_state) = self.windows.iter().find(|w| w.window == event.child) {
+                        if !self.can_resize(win_state.window) {
+                            return Ok(());
+                        }
+
                         let window = win_state.window;
                         self.conditionally_grab_pointer(window)?;
                         let change = ChangeWindowAttributesAux::new().cursor(self.cursors.resize);
-                        self.connection.change_window_attributes(window, &change)?;
+                        self.conn_wrapper
+                            .connection
+                            .change_window_attributes(window, &change)?;
 
-                        let geometry = self.connection.get_geometry(window)?.reply()?;
+                        let geometry =
+                            self.conn_wrapper.connection.get_geometry(window)?.reply()?;
                         self.resize_window = Some((
                             window,
                             (
@@ -126,6 +152,15 @@ impl<'a, C: Connection> WM<'a, C> {
                         self.raise_window(window)?;
                     }
                 }
+                WMCommand::ToggleFullscreen => {
+                    if let Some(win_state) = &self.focused_window {
+                        if win_state.properties.is_fullscreen {
+                            self.unfullscreen_window(win_state.window)?;
+                        } else {
+                            self.fullscreen_window(win_state.window)?;
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -134,19 +169,21 @@ impl<'a, C: Connection> WM<'a, C> {
     fn handle_button_release(&mut self, _event: ButtonReleaseEvent) -> Result<(), XlibError> {
         if let Some(drag_window) = self.drag_window {
             let change = ChangeWindowAttributesAux::new().cursor(self.cursors.normal);
-            self.connection
+            self.conn_wrapper
+                .connection
                 .change_window_attributes(drag_window.0, &change)?;
         }
         if let Some(resize_window) = self.resize_window {
             let change = ChangeWindowAttributesAux::new().cursor(self.cursors.normal);
-            self.connection
+            self.conn_wrapper
+                .connection
                 .change_window_attributes(resize_window.0, &change)?;
         }
 
         self.drag_window = None;
         self.resize_window = None;
         self.pointer_grabbed = false;
-        self.connection.ungrab_pointer(CURRENT_TIME)?;
+        self.conn_wrapper.connection.ungrab_pointer(CURRENT_TIME)?;
         Ok(())
     }
 
@@ -174,7 +211,7 @@ impl<'a, C: Connection> WM<'a, C> {
                     if let Some(state) = &self
                         .focused_window
                         .as_ref()
-                        .and_then(|fw| self.find_window_by_id(fw.window))
+                        .and_then(|fw| self.windows.iter().find(|w| w.window == fw.window))
                     {
                         if state.window == self.screen().root {
                             return Ok(());
@@ -184,17 +221,32 @@ impl<'a, C: Connection> WM<'a, C> {
                     }
                 }
                 WMCommand::MoveWindow => {
-                    let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
-                    self.connection
-                        .change_window_attributes(event.event, &change)?;
-                    if let Some(state) = self.find_window_by_id(event.event) {
+                    if let Some(win_state) = self.windows.iter().find(|w| w.window == event.event) {
+                        if !self.can_resize(win_state.window) {
+                            return Ok(());
+                        }
+
+                        let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
+                        self.conn_wrapper
+                            .connection
+                            .change_window_attributes(event.event, &change)?;
+
                         if self.drag_window.is_none() {
                             let (x, y) = (-event.event_x, -event.event_y);
-                            self.drag_window = Some((state.window, (x, y)));
+                            self.drag_window = Some((win_state.window, (x, y)));
                         }
                     }
                 }
                 WMCommand::ResizeWindow(_factor) => todo!(),
+                WMCommand::ToggleFullscreen => {
+                    if let Some(win_state) = &self.focused_window {
+                        if win_state.properties.is_fullscreen {
+                            self.unfullscreen_window(win_state.window)?;
+                        } else {
+                            self.fullscreen_window(win_state.window)?;
+                        }
+                    }
+                }
             };
         }
 
@@ -208,10 +260,12 @@ impl<'a, C: Connection> WM<'a, C> {
             if state.window != event.window {
                 return true;
             }
-            self.connection
+            self.conn_wrapper
+                .connection
                 .change_save_set(SetMode::DELETE, state.window)
                 .unwrap();
-            self.connection
+            self.conn_wrapper
+                .connection
                 .reparent_window(state.window, root, state.x, state.y)
                 .unwrap();
             false
@@ -229,9 +283,10 @@ impl<'a, C: Connection> WM<'a, C> {
 
         if let Some((win, (x, y))) = self.drag_window {
             let (x, y) = (x + event.root_x, y + event.root_y);
-            self.connection
+            self.conn_wrapper
+                .connection
                 .configure_window(win, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
-            if let Some(state) = self.find_window_by_id_mut(win) {
+            if let Some(state) = self.windows.iter_mut().find(|w| w.window == win) {
                 state.x = x;
                 state.y = y;
             }
@@ -240,13 +295,13 @@ impl<'a, C: Connection> WM<'a, C> {
                 width as i16 + x + event.event_x,
                 height as i16 + y + event.event_y,
             );
-            self.connection.configure_window(
+            self.conn_wrapper.connection.configure_window(
                 win,
                 &ConfigureWindowAux::new()
                     .width(width as u32)
                     .height(height as u32),
             )?;
-            if let Some(state) = self.find_window_by_id_mut(win) {
+            if let Some(state) = self.windows.iter_mut().find(|w| w.window == win) {
                 state.width = width as u16;
                 state.height = height as u16;
             }
@@ -256,18 +311,24 @@ impl<'a, C: Connection> WM<'a, C> {
 
     fn handle_enter(&mut self, event: EnterNotifyEvent) -> Result<(), XlibError> {
         // TODO: can I remove this clone?
-        let win = self.find_window_by_id(event.event).cloned();
+        let win = self
+            .windows
+            .iter()
+            .find(|w| w.window == event.event)
+            .cloned();
         tracing::debug!("focusing {win:?}");
         self.focus_window(FocusWindow::Normal(win.as_ref()))?;
         // TODO: add border when focusing window
         // let change = ChangeWindowAttributesAux::new().border_pixel(self.black_gc);
-        // self.connection.change_window_attributes(event.event)
+        // self.conn_wrapper.connection.change_window_attributes(event.event)
         Ok(())
     }
 
     fn handle_leave(&mut self, event: EnterNotifyEvent) -> Result<(), XlibError> {
         if let Some((win, focused_window)) = self
-            .find_window_by_id(event.event)
+            .windows
+            .iter()
+            .find(|w| w.window == event.event)
             .zip(self.focused_window.as_ref())
         {
             if focused_window.window == win.window {
@@ -286,22 +347,24 @@ impl<'a, C: Connection> WM<'a, C> {
             if state.window != event.window {
                 return true;
             }
-            self.connection
+            self.conn_wrapper
+                .connection
                 .change_save_set(SetMode::DELETE, state.window)
                 .unwrap();
-            self.connection
+            self.conn_wrapper
+                .connection
                 .reparent_window(state.window, root, state.x, state.y)
                 .unwrap();
-            // self.connection.destroy_window(state.frame_window).unwrap();
+            // self.conn_wrapper.connection.destroy_window(state.frame_window).unwrap();
             false
         });
 
         let managed: Vec<_> = self.windows.iter().map(|w| w.window).collect();
 
-        self.connection.change_property32(
+        self.conn_wrapper.connection.change_property32(
             PropMode::REPLACE,
             self.screen().root,
-            self.atoms._NET_CLIENT_LIST,
+            self.conn_wrapper.atoms._NET_CLIENT_LIST,
             AtomEnum::WINDOW,
             managed.as_slice(),
         )?;
@@ -319,7 +382,7 @@ impl<'a, C: Connection> WM<'a, C> {
     }
 
     fn handle_client_message(&mut self, event: ClientMessageEvent) -> Result<(), XlibError> {
-        if event.type_ == self.atoms._NET_WM_STATE {
+        if event.type_ == self.conn_wrapper.atoms._NET_WM_STATE {
             let data = event.data.as_data32();
 
             // https://specifications.freedesktop.org/wm-spec/1.3/ar01s05.html#idm45798289450576
@@ -331,9 +394,9 @@ impl<'a, C: Connection> WM<'a, C> {
             let first_property = data[1];
             let second_property = data[2];
 
-            let atoms = self.atoms;
+            let atoms = self.conn_wrapper.atoms;
 
-            if let Some(win_state) = self.find_window_by_id_mut(event.window) {
+            if let Some(win_state) = self.windows.iter_mut().find(|w| w.window == event.window) {
                 let action = WindowState::get_property_action(action)?;
                 WindowState::set_window_property(
                     atoms,
