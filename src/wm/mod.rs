@@ -408,9 +408,13 @@ impl<'a, C: Connection> WM<'a, C> {
             AtomEnum::CARDINAL,
             &[
                 0,
-                BAR_HEIGHT as u32, // make this modular
-                screen.width_in_pixels as u32,
-                screen.height_in_pixels as u32 - BAR_HEIGHT as u32,
+                self.layout_manager.reserved.top.width,
+                screen.width_in_pixels as u32
+                    - self.layout_manager.reserved.right.width
+                    - self.layout_manager.reserved.left.width,
+                screen.height_in_pixels as u32
+                    - self.layout_manager.reserved.top.width
+                    - self.layout_manager.reserved.bottom.width,
             ],
         )?;
 
