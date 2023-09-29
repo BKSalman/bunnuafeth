@@ -1,9 +1,8 @@
 <p align='right' dir="rtl"><sub>
-  سعودي؟ <a href='AR-README.md' title='Arabic README'>كمل قراءة بالعربي (لهجة سعودية)</a>.
+  عربي؟ <a href='AR-README.md' title='Arabic README'>كمل قراءة بالعربي (لهجة سعودية)</a>.
 </sub></p>
 
-<h1 style="display: flex; justify-content: space-between"> <p>Bunnuafeth</p> <p>بو النوافذ</p></h1>
-<p align='right' dir="rtl">بو النوافذ هو مدير نوافذ شخصي مكتوب بلغة رست</p>
+# Bunnuafeth | بو النوافذ
 
 Bunnuafeth is a personal Window manager written in Rust
 
