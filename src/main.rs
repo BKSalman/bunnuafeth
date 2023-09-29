@@ -35,6 +35,7 @@ fn main() {
         ),
         Hotkey::new(ModMask::M1, x11_keysyms::XK_c, WMCommand::CloseWindow),
         Hotkey::new(ModMask::M1, x11_keysyms::XK_f, WMCommand::ToggleFullscreen),
+        Hotkey::new(ModMask::M1, x11_keysyms::XK_v, WMCommand::ToggleFloating),
     ];
 
     let mouse_hotkeys = vec![

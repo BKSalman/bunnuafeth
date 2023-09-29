@@ -51,7 +51,12 @@
           });
 
           bunnuafeth = craneLib.buildPackage (commonArgs // {
+            src = craneLib.path ./.;
             inherit cargoArtifacts;
+
+            postInstall = ''
+              install -Dm0644 -t $out/share/xsessions $src/bunnuafeth.desktop
+            '';
 
             postFixup = ''
                 patchelf --set-rpath "${pkgs.lib.makeLibraryPath commonArgs.buildInputs}" $out/bin/bunnu

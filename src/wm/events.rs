@@ -39,9 +39,9 @@ impl<'a, C: Connection> WM<'a, C> {
             }
         }
 
-        // if !matches!(event, Event::MotionNotify(_)) {
-        //     tracing::debug!("got event {:?}", event);
-        // }
+        if matches!(event, Event::ConfigureNotify(_)) {
+            tracing::debug!("got event {:?}", event);
+        }
         if should_ignore {
             tracing::debug!("[ignored]");
             return Ok(());
@@ -100,32 +100,42 @@ impl<'a, C: Connection> WM<'a, C> {
                 WMCommand::Execute(_) => todo!(),
                 WMCommand::CloseWindow => todo!(),
                 WMCommand::MoveWindow => {
-                    if let Some(win_state) = self
-                        .windows
-                        .iter()
-                        .find(|w| w.window == event.child)
-                        .cloned()
+                    if let Some(win_state) =
+                        self.windows.iter_mut().find(|w| w.window == event.child)
                     {
+                        win_state.is_floating = true;
+                        let win_state = win_state.clone();
+
                         if !self.can_move(win_state.window) {
-                            tracing::debug!("can't move");
                             return Ok(());
                         }
 
-                        let window = win_state.window;
-                        self.conditionally_grab_pointer(window)?;
+                        self.conditionally_grab_pointer(win_state.window)?;
 
                         let change = ChangeWindowAttributesAux::new().cursor(self.cursors.r#move);
                         self.conn_wrapper
                             .connection
-                            .change_window_attributes(window, &change)?;
-                        let geometry =
-                            self.conn_wrapper.connection.get_geometry(window)?.reply()?;
+                            .change_window_attributes(win_state.window, &change)?;
+                        let geometry = self
+                            .conn_wrapper
+                            .connection
+                            .get_geometry(win_state.window)?
+                            .reply()?;
                         self.drag_window = Some((
-                            window,
+                            win_state.window,
                             (geometry.x - event.event_x, geometry.y - event.event_y),
                         ));
-                        self.raise_window(window)?;
+                        self.raise_window(win_state.window)?;
                         self.focus_window(FocusWindow::Normal(Some(&win_state)))?;
+                    }
+
+                    let screen = self.screen();
+                    if let Some(new_windows) = self.layout_manager.calculate_dimensions(
+                        self.windows.clone(),
+                        screen.width_in_pixels,
+                        screen.height_in_pixels,
+                    ) {
+                        self.apply_layout_diff(new_windows)?;
                     }
                 }
                 WMCommand::ResizeWindow(_) => {
@@ -150,6 +160,7 @@ impl<'a, C: Connection> WM<'a, C> {
                                 (geometry.x - event.event_x, geometry.y - event.event_y),
                             ),
                         ));
+
                         self.raise_window(window)?;
                     }
                 }
@@ -162,6 +173,7 @@ impl<'a, C: Connection> WM<'a, C> {
                         }
                     }
                 }
+                WMCommand::ToggleFloating => todo!(),
             }
         }
         Ok(())
@@ -240,11 +252,30 @@ impl<'a, C: Connection> WM<'a, C> {
                 }
                 WMCommand::ResizeWindow(_factor) => todo!(),
                 WMCommand::ToggleFullscreen => {
-                    if let Some(win_state) = &self.focused_window {
-                        if win_state.properties.is_fullscreen {
-                            self.unfullscreen_window(win_state.window)?;
+                    if let Some(fw_state) = &self.focused_window {
+                        if fw_state.properties.is_fullscreen {
+                            self.unfullscreen_window(fw_state.window)?;
                         } else {
-                            self.fullscreen_window(win_state.window)?;
+                            self.fullscreen_window(fw_state.window)?;
+                        }
+                    }
+                }
+                WMCommand::ToggleFloating => {
+                    if let Some(fw_state) = &self.focused_window {
+                        if let Some(win_state) = self
+                            .windows
+                            .iter_mut()
+                            .find(|w| w.window == fw_state.window)
+                        {
+                            win_state.is_floating = !win_state.is_floating;
+                            let screen = self.screen();
+                            if let Some(new_windows) = self.layout_manager.calculate_dimensions(
+                                self.windows.clone(),
+                                screen.width_in_pixels,
+                                screen.height_in_pixels,
+                            ) {
+                                self.apply_layout_diff(new_windows)?;
+                            }
                         }
                     }
                 }
@@ -281,26 +312,11 @@ impl<'a, C: Connection> WM<'a, C> {
             let screen = self.screen();
 
             if let Some(new_windows) = self.layout_manager.calculate_dimensions(
-                self.windows
-                    .iter()
-                    .filter(|w| w.r#type == WindowType::Normal)
-                    .cloned()
-                    .collect(),
+                self.windows.clone(),
                 screen.width_in_pixels,
                 screen.height_in_pixels,
             ) {
-                for win_state in new_windows.iter() {
-                    // TODO: configure x and y
-                    let configure = ConfigureWindowAux::new()
-                        .width(win_state.width as u32)
-                        .height(win_state.height as u32)
-                        .x(win_state.x as i32)
-                        .y(win_state.y as i32);
-                    self.conn_wrapper
-                        .connection
-                        .configure_window(win_state.window, &configure)?;
-                }
-                self.windows = new_windows;
+                self.apply_layout_diff(new_windows)?;
             }
         }
 
@@ -347,7 +363,7 @@ impl<'a, C: Connection> WM<'a, C> {
         let win = self
             .windows
             .iter()
-            .find(|w| w.window == event.event)
+            .find(|w| w.window == event.event && w.r#type == WindowType::Normal)
             .cloned();
         // tracing::debug!("focusing {win:?}");
         self.focus_window(FocusWindow::Normal(win.as_ref()))?;
@@ -419,26 +435,11 @@ impl<'a, C: Connection> WM<'a, C> {
             let screen = self.screen();
 
             if let Some(new_windows) = self.layout_manager.calculate_dimensions(
-                self.windows
-                    .iter()
-                    .filter(|w| w.r#type == WindowType::Normal)
-                    .cloned()
-                    .collect(),
+                self.windows.clone(),
                 screen.width_in_pixels,
                 screen.height_in_pixels,
             ) {
-                for win_state in new_windows.iter() {
-                    // TODO: configure x and y
-                    let configure = ConfigureWindowAux::new()
-                        .width(win_state.width as u32)
-                        .height(win_state.height as u32)
-                        .x(win_state.x as i32)
-                        .y(win_state.y as i32);
-                    self.conn_wrapper
-                        .connection
-                        .configure_window(win_state.window, &configure)?;
-                }
-                self.windows = new_windows;
+                self.apply_layout_diff(new_windows)?;
             }
         }
 

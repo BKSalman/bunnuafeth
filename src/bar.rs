@@ -10,7 +10,7 @@ use x11rb::{
     COPY_DEPTH_FROM_PARENT,
 };
 
-use crate::{wm::WM, WindowState, WindowType, XlibError, BAR_HEIGHT};
+use crate::{wm::WM, WindowState, WindowType, XlibError, BAR_HEIGHT, RGBA};
 
 pub struct Bar<'a, C: Connection> {
     pub window: Option<Window>,
@@ -87,8 +87,7 @@ impl<'a, C: Connection> WM<'a, C> {
         let window_aux = CreateWindowAux::new()
             .event_mask(EventMask::BUTTON_PRESS | EventMask::EXPOSURE)
             .override_redirect(Some(true.into()))
-            .background_pixel(root.white_pixel)
-            .cursor(self.cursors.hand);
+            .background_pixel(RGBA::new(0xff, 0xff, 0xff, 0).as_argb_u32());
 
         self.conn_wrapper.connection.create_window(
             COPY_DEPTH_FROM_PARENT,
@@ -162,36 +161,32 @@ impl<'a, C: Connection> WM<'a, C> {
             ],
         )?;
 
-        tracing::debug!("mapping bar {bar_win_id}");
-        self.conn_wrapper.connection.map_window(bar_win_id)?;
-
         let geom = self
             .conn_wrapper
             .connection
             .get_geometry(bar_win_id)?
             .reply()?;
 
-        self.windows
-            .push(WindowState::new(bar_win_id, &geom, WindowType::Dock, false));
+        self.manage_window(bar_win_id, &geom)?;
 
         Ok(())
     }
 
     pub fn draw_bar(&self) -> Result<(), XlibError> {
         if let Some(bar_window) = self.bar.window {
-            self.conn_wrapper
-                .connection
-                .poly_fill_rectangle(
-                    bar_window,
-                    self.black_gc,
-                    &[Rectangle {
-                        x: self.bar.x,
-                        y: self.bar.y,
-                        width: self.bar.width,
-                        height: self.bar.height,
-                    }],
-                )?
-                .check()?;
+            // self.conn_wrapper
+            //     .connection
+            //     .poly_fill_rectangle(
+            //         bar_window,
+            //         self.black_gc,
+            //         &[Rectangle {
+            //             x: self.bar.x,
+            //             y: self.bar.y,
+            //             width: self.bar.width,
+            //             height: self.bar.height,
+            //         }],
+            //     )?
+            //     .check()?;
             if let Some(fw_state) = &self.focused_window {
                 let reply = self
                     .conn_wrapper
@@ -207,7 +202,13 @@ impl<'a, C: Connection> WM<'a, C> {
                     .reply()?;
                 self.conn_wrapper
                     .connection
-                    .image_text8(bar_window, self.black_gc, 1, 10, &reply.value)?
+                    .image_text8(
+                        bar_window,
+                        self.black_gc,
+                        1,
+                        10,
+                        fw_state.window.to_string().as_bytes(),
+                    )?
                     .check()?;
             } else {
                 self.conn_wrapper.connection.image_text8(

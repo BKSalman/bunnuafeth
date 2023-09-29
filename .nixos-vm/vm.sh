@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -e
+
 SCRIPTPATH=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 QEMU_OPTS="
@@ -20,11 +22,7 @@ bu-vm () {
 
   echo building a bunnuafeth virtual machine...
 
-  nix build .#nixosConfigurations.bunnuafeth.config.system.build.vm -o "${SCRIPTPATH}/result"
-
-  if [ $? -ne 0 ]; then
-    exit $?
-  fi
+  nix build .#nixosConfigurations.bunnuafeth.config.system.build.vm -o "${SCRIPTPATH}/result" -L
 
   QEMU_OPTS=$QEMU_OPTS $SCRIPTPATH/result/bin/run-bunnuafeth-vm & 
   PID_QEMU="$!"

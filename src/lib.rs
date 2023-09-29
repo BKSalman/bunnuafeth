@@ -88,6 +88,7 @@ pub enum WMCommand {
     /// the parameter here is not needed for mouse resizing
     ResizeWindow(i16),
     ToggleFullscreen,
+    ToggleFloating,
 }
 
 pub struct Config {
