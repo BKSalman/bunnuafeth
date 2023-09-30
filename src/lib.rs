@@ -400,6 +400,18 @@ impl WindowState {
             }
         }
     }
+
+    pub fn can_move(&self) -> bool {
+        return !self.properties.is_fullscreen
+            && !self.properties.is_sticky
+            && !(self.properties.is_maximized_horz && self.properties.is_maximized_vert);
+    }
+
+    pub fn can_resize(&self) -> bool {
+        return !self.properties.is_fullscreen
+            && !self.properties.is_sticky
+            && !(self.properties.is_maximized_horz && self.properties.is_maximized_vert);
+    }
 }
 
 pub enum PropertyAction {

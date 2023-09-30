@@ -674,23 +674,6 @@ impl<'a, C: Connection> WM<'a, C> {
             &[BORDER_WIDTH; 4],
         )?;
 
-        self.conn_wrapper.connection.grab_server()?;
-        self.conn_wrapper
-            .connection
-            .change_save_set(SetMode::INSERT, window)?;
-        self.conn_wrapper.connection.change_property32(
-            PropMode::APPEND,
-            screen.root,
-            self.conn_wrapper.atoms._NET_CLIENT_LIST,
-            AtomEnum::WINDOW,
-            &[window],
-        )?;
-        self.conn_wrapper
-            .connection
-            .map_window(window)?
-            .sequence_number();
-        self.conn_wrapper.connection.ungrab_server()?;
-
         let window_type = self.get_window_type(window)?;
 
         tracing::debug!("window type: {window_type:?}");
@@ -772,18 +755,19 @@ impl<'a, C: Connection> WM<'a, C> {
                     tracing::debug!("focus mapped window");
                     self.focus_window(FocusWindow::Normal(Some(&win_state)))?;
                     // TODO: move mouse to new window
-                    let screen = self.screen();
-                    self.conn_wrapper.connection.warp_pointer(
-                        x11rb::NONE,
-                        screen.root,
-                        0,
-                        0,
-                        0,
-                        0,
-                        win_state.x + (win_state.width / 2) as i16,
-                        win_state.y + (win_state.height / 2) as i16,
-                    )?;
-                    self.conn_wrapper.connection.flush()?;
+
+                    // let screen = self.screen();
+                    // self.conn_wrapper.connection.warp_pointer(
+                    //     x11rb::NONE,
+                    //     screen.root,
+                    //     0,
+                    //     0,
+                    //     0,
+                    //     0,
+                    //     win_state.x + (win_state.width / 2) as i16,
+                    //     win_state.y + (win_state.height / 2) as i16,
+                    // )?;
+                    // self.conn_wrapper.connection.flush()?;
                 }
 
                 let cookie = self
@@ -824,6 +808,28 @@ impl<'a, C: Connection> WM<'a, C> {
             self.apply_layout_diff(new_windows)?;
         }
 
+        // after all the layout calculations we map the window
+        // this prevents the window from appearing for a moment in a place
+        // then moved, which is jarring to see
+
+        let screen = self.screen();
+        self.conn_wrapper.connection.grab_server()?;
+        self.conn_wrapper
+            .connection
+            .change_save_set(SetMode::INSERT, window)?;
+        self.conn_wrapper.connection.change_property32(
+            PropMode::APPEND,
+            screen.root,
+            self.conn_wrapper.atoms._NET_CLIENT_LIST,
+            AtomEnum::WINDOW,
+            &[window],
+        )?;
+        self.conn_wrapper
+            .connection
+            .map_window(window)?
+            .sequence_number();
+        self.conn_wrapper.connection.ungrab_server()?;
+
         Ok(())
     }
 
@@ -845,6 +851,7 @@ impl<'a, C: Connection> WM<'a, C> {
                     self.conn_wrapper
                         .connection
                         .change_window_attributes(win_state.window, &change)?;
+
                     self.conn_wrapper.connection.set_input_focus(
                         InputFocus::NONE,
                         win_state.window,
@@ -1097,58 +1104,42 @@ impl<'a, C: Connection> WM<'a, C> {
         Ok(())
     }
 
-    pub fn can_move(&self, window: Window) -> bool {
-        if let Some(win_state) = self.windows.iter().find(|w| w.window == window) {
-            return !win_state.properties.is_fullscreen
-                && !win_state.properties.is_sticky
-                && !(win_state.properties.is_maximized_horz
-                    && win_state.properties.is_maximized_vert);
-        }
-
-        false
-    }
-
-    pub fn can_resize(&self, window: Window) -> bool {
-        if let Some(win_state) = self.windows.iter().find(|w| w.window == window) {
-            return !win_state.properties.is_fullscreen
-                && !win_state.properties.is_sticky
-                && !(win_state.properties.is_maximized_horz
-                    && win_state.properties.is_maximized_vert);
-        }
-
-        false
-    }
-
     pub fn apply_layout_diff(
         &mut self,
         windows_diff: Vec<WindowStateDiff>,
     ) -> Result<(), XlibError> {
         for win_state_diff in windows_diff.iter() {
-            let configure = ConfigureWindowAux::new()
-                .width(win_state_diff.width.map(Into::into))
-                .height(win_state_diff.height.map(Into::into))
-                .x(win_state_diff.x.map(Into::into))
-                .y(win_state_diff.y.map(Into::into));
-            self.conn_wrapper
-                .connection
-                .configure_window(win_state_diff.window, &configure)?;
-
-            if let Some(win_state) = self
-                .windows
-                .iter_mut()
-                .find(|w| w.window == win_state_diff.window)
+            if win_state_diff.x.is_some()
+                || win_state_diff.y.is_some()
+                || win_state_diff.width.is_some()
+                || win_state_diff.height.is_some()
             {
-                if let Some(new_x) = win_state_diff.x {
-                    win_state.x = new_x
-                }
-                if let Some(new_y) = win_state_diff.y {
-                    win_state.y = new_y
-                }
-                if let Some(new_width) = win_state_diff.width {
-                    win_state.width = new_width
-                }
-                if let Some(new_height) = win_state_diff.height {
-                    win_state.height = new_height
+                let configure = ConfigureWindowAux::new()
+                    .width(win_state_diff.width.map(Into::into))
+                    .height(win_state_diff.height.map(Into::into))
+                    .x(win_state_diff.x.map(Into::into))
+                    .y(win_state_diff.y.map(Into::into));
+                self.conn_wrapper
+                    .connection
+                    .configure_window(win_state_diff.window, &configure)?;
+
+                if let Some(win_state) = self
+                    .windows
+                    .iter_mut()
+                    .find(|w| w.window == win_state_diff.window)
+                {
+                    if let Some(new_x) = win_state_diff.x {
+                        win_state.x = new_x
+                    }
+                    if let Some(new_y) = win_state_diff.y {
+                        win_state.y = new_y
+                    }
+                    if let Some(new_width) = win_state_diff.width {
+                        win_state.width = new_width
+                    }
+                    if let Some(new_height) = win_state_diff.height {
+                        win_state.height = new_height
+                    }
                 }
             }
         }

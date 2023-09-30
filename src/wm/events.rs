@@ -103,12 +103,13 @@ impl<'a, C: Connection> WM<'a, C> {
                     if let Some(win_state) =
                         self.windows.iter_mut().find(|w| w.window == event.child)
                     {
-                        win_state.is_floating = true;
-                        let win_state = win_state.clone();
-
-                        if !self.can_move(win_state.window) {
+                        if !win_state.can_move() {
                             return Ok(());
                         }
+
+                        win_state.is_floating = true;
+
+                        let win_state = win_state.clone();
 
                         self.conditionally_grab_pointer(win_state.window)?;
 
@@ -140,7 +141,7 @@ impl<'a, C: Connection> WM<'a, C> {
                 }
                 WMCommand::ResizeWindow(_) => {
                     if let Some(win_state) = self.windows.iter().find(|w| w.window == event.child) {
-                        if !self.can_resize(win_state.window) {
+                        if !win_state.can_resize() {
                             return Ok(());
                         }
 
@@ -235,7 +236,12 @@ impl<'a, C: Connection> WM<'a, C> {
                 }
                 WMCommand::MoveWindow => {
                     if let Some(win_state) = self.windows.iter().find(|w| w.window == event.event) {
-                        if !self.can_resize(win_state.window) {
+                        // only allow moving floating windows with the keyboard
+                        if !win_state.is_floating {
+                            return Ok(());
+                        }
+
+                        if !win_state.can_move() {
                             return Ok(());
                         }
 

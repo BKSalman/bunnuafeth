@@ -32,7 +32,7 @@ pub struct LayoutManager {
     pub reserved: ReservedEdges,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct WindowStateDiff {
     pub x: Option<i16>,
     pub y: Option<i16>,
@@ -103,6 +103,7 @@ impl LayoutManager {
                                 .map(|(i, win_state)| {
                                     let height = screen_height / sub_windows_count as u16
                                         - (BORDER_WIDTH * 2) as u16;
+
                                     WindowStateDiff {
                                         x: some_if_changed!(win_state.x, (screen_width / 2) as i16),
                                         y: some_if_changed!(
