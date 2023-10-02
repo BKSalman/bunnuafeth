@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-set -e
-
 SCRIPTPATH=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 QEMU_OPTS="
@@ -13,6 +11,8 @@ QEMU_OPTS="
 "
 
 bu-vm () {
+  set -e
+
   if [ "$1" = "clean" ]; then 
 
     rm -rf "${SCRIPTPATH}/result"

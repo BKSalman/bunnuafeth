@@ -1,7 +1,9 @@
 use crate::{
     atoms::Atoms,
+    bar::BAR_HEIGHT,
     connection_wrapper::ConnWrapper,
     layout::{EdgeDimensions, Layout, LayoutManager, ReservedEdges, TiledLayout, WindowStateDiff},
+    windows::{WindowHandle, Windows},
     ButtonMapping, WindowType, RGBA,
 };
 use core::marker::PhantomData;
@@ -16,8 +18,8 @@ use x11rb::{
         xproto::{
             AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux,
             ConnectionExt, CreateGCAux, CreateWindowAux, Cursor, EventMask, FontDraw, Gcontext,
-            GetGeometryReply, GrabMode, InputFocus, MapState, ModMask, PropMode, Screen, SetMode,
-            StackMode, Timestamp, WindowClass,
+            GetGeometryReply, GrabMode, InputFocus, MapNotifyEvent, MapState, ModMask, PropMode,
+            Screen, SetMode, StackMode, Timestamp, WindowClass,
         },
         ErrorKind,
     },
@@ -26,7 +28,7 @@ use x11rb::{
     COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT, CURRENT_TIME, NONE,
 };
 
-use crate::{Bar, BarPosition, Config, KeyMapping, WMCommand, WindowState, XlibError, BAR_HEIGHT};
+use crate::{Bar, BarPosition, Config, KeyMapping, WMCommand, WindowState, XlibError};
 
 mod events;
 
@@ -57,7 +59,7 @@ pub struct WM<'a, C: Connection> {
     pub fonts: Vec<Font>,
     pub screen_num: usize,
     pending_expose: HashSet<Window>,
-    pub windows: Vec<WindowState>,
+    pub windows: Windows,
     pub black_gc: Gcontext,
     pub sequences_to_ignore: BinaryHeap<Reverse<u16>>,
     pub bar: Bar<'a, C>,
@@ -67,7 +69,6 @@ pub struct WM<'a, C: Connection> {
     config: Config,
     key_mapping: HashMap<KeyMapping, WMCommand>,
     button_mapping: HashMap<ButtonMapping, WMCommand>,
-    pub focused_window: Option<WindowState>,
     last_timestamp: Timestamp,
     layout_manager: LayoutManager,
 }
@@ -211,6 +212,7 @@ impl<'a, C: Connection> WM<'a, C> {
             conn_wrapper: ConnWrapper {
                 connection,
                 atoms: Atoms::new(connection)?.reply()?,
+                root: screen.root,
             },
             cursors: Cursors {
                 normal,
@@ -220,7 +222,7 @@ impl<'a, C: Connection> WM<'a, C> {
             },
             fonts: vec![],
             screen_num,
-            windows: vec![],
+            windows: Windows::new(),
             black_gc,
             sequences_to_ignore: Default::default(),
             bar: Bar {
@@ -239,7 +241,6 @@ impl<'a, C: Connection> WM<'a, C> {
             resize_window: None,
             config,
             key_mapping: HashMap::new(),
-            focused_window: None,
             button_mapping: HashMap::new(),
             pointer_grabbed: false,
             last_timestamp: CURRENT_TIME,
@@ -278,7 +279,7 @@ impl<'a, C: Connection> WM<'a, C> {
 
         self.add_ewmh_default().expect("EWMH compliance");
 
-        self.focus_window(FocusWindow::Root(screen.root))?;
+        self.unfocus()?;
 
         self.key_mapping()?;
         self.button_mapping();
@@ -651,9 +652,8 @@ impl<'a, C: Connection> WM<'a, C> {
         geom: &GetGeometryReply,
     ) -> Result<(), XlibError> {
         tracing::debug!("managing window {:?}", window);
-        let screen = self.screen();
         assert!(
-            self.windows.iter().find(|w| w.window == window).is_none(),
+            self.windows.get_window(window).is_none(),
             "Unmanaged window should not exist already!"
         );
         let change = ChangeWindowAttributesAux::new().event_mask(
@@ -682,78 +682,41 @@ impl<'a, C: Connection> WM<'a, C> {
 
         let win_state = WindowState::new(window, geom, window_type, false);
 
-        match win_state.r#type {
-            WindowType::Dock => {
-                let reserved_space = self
-                    .conn_wrapper
-                    .connection
-                    .get_property(
-                        false,
-                        window,
-                        self.conn_wrapper.atoms._NET_WM_STRUT_PARTIAL,
-                        AtomEnum::CARDINAL,
-                        0,
-                        12,
-                    )?
-                    .reply()?;
+        match &win_state.r#type {
+            WindowType::Dock(ReservedEdges {
+                top,
+                right,
+                left,
+                bottom,
+            }) => {
+                self.layout_manager.reserved.top.width =
+                    self.layout_manager.reserved.top.width.max(top.width);
+                self.layout_manager.reserved.bottom.width =
+                    self.layout_manager.reserved.bottom.width.max(bottom.width);
+                self.layout_manager.reserved.left.width =
+                    self.layout_manager.reserved.left.width.max(left.width);
+                self.layout_manager.reserved.right.width =
+                    self.layout_manager.reserved.right.width.max(right.width);
 
-                let reserved_space = reserved_space.value32();
-
-                if let Some(reserved_space) = reserved_space {
-                    let reserved_space: Vec<u32> = reserved_space.collect();
-                    let left_width = reserved_space[0];
-                    let left_start_y = reserved_space[4];
-                    let left_end_y = reserved_space[5];
-                    let left = EdgeDimensions {
-                        width: left_width,
-                        start: left_start_y,
-                        end: left_end_y,
-                    };
-
-                    let right_width = reserved_space[1];
-                    let right_start_y = reserved_space[6];
-                    let right_end_y = reserved_space[7];
-                    let right = EdgeDimensions {
-                        width: right_width,
-                        start: right_start_y,
-                        end: right_end_y,
-                    };
-
-                    let top_width = reserved_space[2];
-                    let top_start_x = reserved_space[8];
-                    let top_end_x = reserved_space[9];
-                    let top = EdgeDimensions {
-                        width: top_width,
-                        start: top_start_x,
-                        end: top_end_x,
-                    };
-
-                    let bottom_width = reserved_space[3];
-                    let bottom_start_x = reserved_space[10];
-                    let bottom_end_x = reserved_space[11];
-                    let bottom = EdgeDimensions {
-                        width: bottom_width,
-                        start: bottom_start_x,
-                        end: bottom_end_x,
-                    };
-
-                    self.layout_manager.reserved = ReservedEdges {
-                        top,
-                        right,
-                        left,
-                        bottom,
-                    };
-                }
+                self.windows.add_unmanaged_window(win_state);
+            }
+            WindowType::Desktop => {
+                self.windows.add_unmanaged_window(win_state);
             }
             WindowType::Normal => {
-                if let Some(fsw_state) = self.windows.iter().find(|w| w.properties.is_fullscreen) {
+                self.windows.add_window(win_state.window, win_state);
+
+                if let Some((_, fsw_state)) = self
+                    .windows
+                    .get_window_by(|(_, w)| w.properties.is_fullscreen)
+                {
                     let configure = ConfigureWindowAux::new().stack_mode(StackMode::ABOVE);
                     self.conn_wrapper
                         .connection
                         .configure_window(fsw_state.window, &configure)?;
                 } else {
                     tracing::debug!("focus mapped window");
-                    self.focus_window(FocusWindow::Normal(Some(&win_state)))?;
+                    self.focus_window(window)?;
                     // TODO: move mouse to new window
 
                     // let screen = self.screen();
@@ -793,15 +756,9 @@ impl<'a, C: Connection> WM<'a, C> {
             _ => todo!(),
         }
 
-        self.windows.push(win_state);
-
         let screen = self.screen();
         if let Some(new_windows) = self.layout_manager.calculate_dimensions(
-            self.windows
-                .iter()
-                .filter(|w| w.r#type == WindowType::Normal)
-                .cloned()
-                .collect(),
+            self.windows.windows(),
             screen.width_in_pixels,
             screen.height_in_pixels,
         ) {
@@ -833,54 +790,51 @@ impl<'a, C: Connection> WM<'a, C> {
         Ok(())
     }
 
-    fn next_window(&self) -> Option<&WindowState> {
-        // TODO: make this better
-        self.windows
-            .iter()
-            .filter(|w| w.r#type != WindowType::Dock)
-            .next_back()
-    }
-
-    fn focus_window(&mut self, window: FocusWindow) -> Result<(), XlibError> {
-        match window {
-            FocusWindow::Normal(win_state) => {
-                if let Some(win_state) = win_state {
-                    let change =
-                        ChangeWindowAttributesAux::new().border_pixel(RGBA::CYAN.as_argb_u32());
-
-                    self.conn_wrapper
-                        .connection
-                        .change_window_attributes(win_state.window, &change)?;
-
-                    self.conn_wrapper.connection.set_input_focus(
-                        InputFocus::NONE,
-                        win_state.window,
-                        CURRENT_TIME,
-                    )?;
-                }
-                if let Some(fw) = &self.focused_window {
-                    if (win_state.is_some_and(|win| fw.window != win.window) || win_state.is_none())
-                        && fw.r#type == WindowType::Normal
-                    {
-                        let change = ChangeWindowAttributesAux::new()
-                            .border_pixel(RGBA::BLACK.as_argb_u32());
-                        self.conn_wrapper
-                            .connection
-                            .change_window_attributes(fw.window, &change)?;
-                    }
-                }
-
-                self.focused_window = win_state.cloned();
-            }
-            FocusWindow::Root(window) => {
-                self.conn_wrapper.connection.set_input_focus(
-                    InputFocus::NONE,
-                    window,
-                    CURRENT_TIME,
-                )?;
-                self.focused_window = None;
+    fn focus_window(&mut self, window_handle: WindowHandle) -> Result<(), XlibError> {
+        if let Some(previos_focus) = self.windows.focus_window(window_handle)? {
+            if previos_focus.window != window_handle {
+                let change =
+                    ChangeWindowAttributesAux::new().border_pixel(RGBA::BLACK.as_argb_u32());
+                self.conn_wrapper
+                    .connection
+                    .change_window_attributes(previos_focus.window, &change)?;
             }
         }
+        let change = ChangeWindowAttributesAux::new().border_pixel(RGBA::CYAN.as_argb_u32());
+
+        self.conn_wrapper
+            .connection
+            .change_window_attributes(window_handle, &change)?;
+
+        self.conn_wrapper.connection.set_input_focus(
+            InputFocus::NONE,
+            window_handle,
+            CURRENT_TIME,
+        )?;
+
+        let _ = self.draw_bar();
+
+        self.conn_wrapper.connection.flush()?;
+
+        Ok(())
+    }
+
+    /// removes focus from currently focused window and sets input focus on root window
+    fn unfocus(&mut self) -> Result<(), XlibError> {
+        if let Some(previos_focus) = self.windows.previos_focus() {
+            let change = ChangeWindowAttributesAux::new().border_pixel(RGBA::BLACK.as_argb_u32());
+            self.conn_wrapper
+                .connection
+                .change_window_attributes(previos_focus.window, &change)?;
+        }
+
+        self.windows.unfocus();
+
+        self.conn_wrapper.connection.set_input_focus(
+            InputFocus::NONE,
+            self.screen().root,
+            CURRENT_TIME,
+        )?;
 
         let _ = self.draw_bar();
 
@@ -897,8 +851,7 @@ impl<'a, C: Connection> WM<'a, C> {
 
         let window_state = self
             .windows
-            .iter()
-            .find(|w| w.window == window)
+            .get_window(window)
             .ok_or(XlibError::WindowNotFound)?;
 
         self.conn_wrapper.connection.clear_area(
@@ -946,11 +899,11 @@ impl<'a, C: Connection> WM<'a, C> {
     pub(crate) fn refresh(&mut self) {
         while let Some(&win) = self.pending_expose.iter().next() {
             self.pending_expose.remove(&win);
-            if let Some(state) = self.windows.iter().find(|w| w.window == win) {
+            if let Some(win_state) = self.windows.get_window(win) {
                 if let Err(err) = self.draw_bar() {
                     tracing::debug!(
                         "Error while redrawing window {:x?}: {:?}",
-                        state.window,
+                        win_state.window,
                         err
                     );
                 }
@@ -1010,12 +963,81 @@ impl<'a, C: Connection> WM<'a, C> {
         let values = window_types.value32();
 
         if let Some(values) = values {
-            Ok(values
+            let window_type = values
                 .map(|v| {
                     if v == self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE_DESKTOP {
                         Some(WindowType::Desktop)
                     } else if v == self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE_DOCK {
-                        Some(WindowType::Dock)
+                        if let Ok(reserved_space) = self
+                            .conn_wrapper
+                            .connection
+                            .get_property(
+                                false,
+                                window,
+                                self.conn_wrapper.atoms._NET_WM_STRUT_PARTIAL,
+                                AtomEnum::CARDINAL,
+                                0,
+                                12,
+                            )
+                            .map(|reserved_space| {
+                                // should not panic unless something is wrong with x server
+                                let reply = reserved_space.reply().unwrap();
+
+                                let reserved_space = reply.value32();
+
+                                if let Some(reserved_space) = reserved_space {
+                                    let reserved_space: Vec<u32> = reserved_space.collect();
+                                    let left_width = reserved_space[0];
+                                    let left_start_y = reserved_space[4];
+                                    let left_end_y = reserved_space[5];
+                                    let left = EdgeDimensions {
+                                        width: left_width,
+                                        start: left_start_y,
+                                        end: left_end_y,
+                                    };
+
+                                    let right_width = reserved_space[1];
+                                    let right_start_y = reserved_space[6];
+                                    let right_end_y = reserved_space[7];
+                                    let right = EdgeDimensions {
+                                        width: right_width,
+                                        start: right_start_y,
+                                        end: right_end_y,
+                                    };
+
+                                    let top_width = reserved_space[2];
+                                    let top_start_x = reserved_space[8];
+                                    let top_end_x = reserved_space[9];
+                                    let top = EdgeDimensions {
+                                        width: top_width,
+                                        start: top_start_x,
+                                        end: top_end_x,
+                                    };
+
+                                    let bottom_width = reserved_space[3];
+                                    let bottom_start_x = reserved_space[10];
+                                    let bottom_end_x = reserved_space[11];
+                                    let bottom = EdgeDimensions {
+                                        width: bottom_width,
+                                        start: bottom_start_x,
+                                        end: bottom_end_x,
+                                    };
+
+                                    ReservedEdges {
+                                        top,
+                                        right,
+                                        left,
+                                        bottom,
+                                    }
+                                } else {
+                                    ReservedEdges::default()
+                                }
+                            })
+                        {
+                            Some(WindowType::Dock(reserved_space))
+                        } else {
+                            Some(WindowType::Dock(ReservedEdges::default()))
+                        }
                     } else if v == self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE_TOOLBAR {
                         Some(WindowType::Toolbar)
                     } else if v == self.conn_wrapper.atoms._NET_WM_WINDOW_TYPE_MENU {
@@ -1033,7 +1055,9 @@ impl<'a, C: Connection> WM<'a, C> {
                     }
                 })
                 .next()
-                .unwrap_or(None))
+                .unwrap_or(None);
+
+            Ok(window_type)
         } else {
             Ok(None)
         }
@@ -1043,7 +1067,10 @@ impl<'a, C: Connection> WM<'a, C> {
     // fn get_initial_window_properties(&self) {}
 
     pub fn fullscreen_window(&mut self, window: Window) -> Result<(), XlibError> {
-        if let Some(fsw_state) = self.windows.iter_mut().find(|w| w.properties.is_fullscreen) {
+        if let Some((_, fsw_state)) = self
+            .windows
+            .get_window_mut_by(|(_, w)| w.properties.is_fullscreen)
+        {
             fsw_state.properties.is_fullscreen = false;
             let configure = ConfigureWindowAux::new()
                 .width(fsw_state.width as u32)
@@ -1064,7 +1091,7 @@ impl<'a, C: Connection> WM<'a, C> {
         let screen_width = self.screen().width_in_pixels as u32;
         let screen_height = self.screen().height_in_pixels as u32;
 
-        if let Some(win_state) = self.windows.iter_mut().find(|state| state.window == window) {
+        if let Some((_, win_state)) = self.windows.get_window_mut_by(|(_, w)| w.window == window) {
             win_state.properties.is_fullscreen = true;
             win_state.properties.above = true;
             let configure = ConfigureWindowAux::new()
@@ -1085,7 +1112,7 @@ impl<'a, C: Connection> WM<'a, C> {
     }
 
     pub fn unfullscreen_window(&mut self, window: Window) -> Result<(), XlibError> {
-        if let Some(win_state) = self.windows.iter_mut().find(|w| w.window == window) {
+        if let Some((_, win_state)) = self.windows.get_window_mut_by(|(_, w)| w.window == window) {
             win_state.properties.is_fullscreen = false;
 
             let configure = ConfigureWindowAux::new()
@@ -1123,10 +1150,9 @@ impl<'a, C: Connection> WM<'a, C> {
                     .connection
                     .configure_window(win_state_diff.window, &configure)?;
 
-                if let Some(win_state) = self
+                if let Some((_, win_state)) = self
                     .windows
-                    .iter_mut()
-                    .find(|w| w.window == win_state_diff.window)
+                    .get_window_mut_by(|(_, w)| w.window == win_state_diff.window)
                 {
                     if let Some(new_x) = win_state_diff.x {
                         win_state.x = new_x
@@ -1144,8 +1170,15 @@ impl<'a, C: Connection> WM<'a, C> {
             }
         }
 
-        for win_state in self.windows.clone().iter().filter(|w| w.is_floating) {
-            self.raise_window(win_state.window)?;
+        let floating_windows: Vec<u32> = self
+            .windows
+            .floating_windows_handles()
+            .into_iter()
+            .cloned()
+            .collect();
+
+        for window_handle in floating_windows {
+            self.raise_window(window_handle)?;
         }
 
         Ok(())
@@ -1157,19 +1190,32 @@ impl<'a, C: Connection> WM<'a, C> {
             .connection
             .configure_window(window, &configure)?;
 
-        if let Some(window_index) = self.windows.iter().position(|w| w.window == window) {
-            if window_index == 0 {
-                return Ok(());
-            }
-            let win_state = self.windows.remove(window_index);
-            self.windows.insert(0, win_state);
-        }
+        self.windows.move_to_top(window);
 
         Ok(())
     }
-}
 
-enum FocusWindow<'a> {
-    Normal(Option<&'a WindowState>),
-    Root(Window),
+    fn handle_map_notify(&mut self, event: MapNotifyEvent) -> Result<(), XlibError> {
+        if let Some(window_type) = self.get_window_type(event.window)? {
+            match window_type {
+                WindowType::Dock(ReservedEdges {
+                    top,
+                    right,
+                    left,
+                    bottom,
+                }) => {
+                    self.layout_manager.reserved.top.width =
+                        self.layout_manager.reserved.top.width.max(top.width);
+                    self.layout_manager.reserved.bottom.width =
+                        self.layout_manager.reserved.bottom.width.max(bottom.width);
+                    self.layout_manager.reserved.left.width =
+                        self.layout_manager.reserved.left.width.max(left.width);
+                    self.layout_manager.reserved.right.width =
+                        self.layout_manager.reserved.right.width.max(right.width);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }

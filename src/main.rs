@@ -50,24 +50,13 @@ fn main() {
 
     let mut wm = WM::new(conn, screen_num, config).expect("create drawable");
     // 6275a6
-    wm.set_root_background_color(RGBA::new(0xff, 0, 0, 0).as_argb_u32())
+    wm.set_root_background_color(RGBA::new(0x62, 0x75, 0xa6, 0).as_argb_u32())
         .unwrap();
 
     wm.create_bar().unwrap();
     wm.bar.update_position(&wm).unwrap();
 
     wm.scan_windows().expect("scan windows");
-
-    // Monitor::get_monitors(&wm)
-    //     .expect("get monitors")
-    //     .iter_mut()
-    //     .for_each(|monitor| {
-    //         ;
-    //         monitor
-    //             .bar
-    //             .update_position(&wm)
-    //             .expect("update bar position");
-    //     });
 
     wm.setup().expect("setup window manager");
 

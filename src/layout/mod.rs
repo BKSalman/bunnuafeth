@@ -12,14 +12,14 @@ pub enum TiledLayout {
     MainStack,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct EdgeDimensions {
     pub width: u32,
     pub start: u32,
     pub end: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ReservedEdges {
     pub top: EdgeDimensions,
     pub right: EdgeDimensions,
@@ -47,7 +47,7 @@ pub struct WindowStateDiff {
 impl LayoutManager {
     pub fn calculate_dimensions(
         &self,
-        windows: Vec<WindowState>,
+        windows: Vec<&WindowState>,
         screen_width: u16,
         screen_height: u16,
     ) -> Option<Vec<WindowStateDiff>> {
@@ -57,6 +57,7 @@ impl LayoutManager {
                 TiledLayout::MainStack => {
                     let mut windows: Vec<WindowState> = windows
                         .into_iter()
+                        .cloned()
                         .filter(|w| w.r#type == WindowType::Normal && !w.is_floating)
                         .collect();
                     let mut windows_final: Vec<WindowStateDiff> = Vec::new();

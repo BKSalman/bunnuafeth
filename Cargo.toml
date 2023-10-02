@@ -10,8 +10,10 @@ name = "bunnu"
 path = "src/main.rs"
 
 [dependencies]
+indexmap = "2.0.2"
 thiserror = "1.0.48"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 x11-keysyms = { version = "0.1.0", features = ["all"] }
+# all extensions are enabled until I figure out which ones I need
 x11rb = { version = "0.12.0", features = ["xinerama", "randr", "dri2", "cursor", "xkb", "xinput", "glx", "all-extensions"] }

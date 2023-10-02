@@ -8,6 +8,7 @@ use crate::{atoms::Atoms, WindowProperties, XlibError};
 
 pub struct ConnWrapper<'a, C: Connection> {
     pub connection: &'a C,
+    pub root: u32,
     pub atoms: Atoms,
 }
 

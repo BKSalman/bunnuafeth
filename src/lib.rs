@@ -1,9 +1,8 @@
 use atoms::Atoms;
 use bar::{Bar, BarPosition};
-use std::{
-    io::{BufRead, BufReader},
-    marker::PhantomData,
-};
+use layout::ReservedEdges;
+use std::marker::PhantomData;
+use windows::WindowError;
 use wm::WM;
 use x11rb::protocol::{randr::ConnectionExt, xproto::ButtonIndex};
 use x11rb::{
@@ -17,9 +16,8 @@ mod bar;
 mod connection_wrapper;
 pub mod layout;
 mod util;
+mod windows;
 pub mod wm;
-
-pub const BAR_HEIGHT: u16 = 30;
 
 pub struct RGBA {
     red: u8,
@@ -291,7 +289,7 @@ impl WindowState {
             height: geom.height,
             r#type,
             properties: WindowProperties::default(),
-            is_floating: false,
+            is_floating,
         }
     }
 
@@ -424,7 +422,7 @@ pub enum PropertyAction {
 pub enum WindowType {
     Desktop,
     Dialog,
-    Dock,
+    Dock(ReservedEdges),
     Menu,
     Normal,
     Splash,
@@ -542,16 +540,16 @@ impl<'a, C: Connection> Monitor<'a, C> {
 }
 
 pub fn run<C: Connection>(mut wm: WM<'_, C>) -> Result<(), XlibError> {
-    let mut output = std::process::Command::new("kitty").spawn().unwrap();
-    std::thread::spawn(move || {
-        if let Some(stdout) = output.stdout.take() {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            while let Some(Ok(line)) = lines.next() {
-                tracing::debug!("{line}");
-            }
-        }
-    });
+    // let mut output = std::process::Command::new("kitty").spawn().unwrap();
+    // std::thread::spawn(move || {
+    //     if let Some(stdout) = output.stdout.take() {
+    //         let reader = BufReader::new(stdout);
+    //         let mut lines = reader.lines();
+    //         while let Some(Ok(line)) = lines.next() {
+    //             tracing::debug!("{line}");
+    //         }
+    //     }
+    // });
 
     loop {
         wm.refresh();
@@ -578,6 +576,9 @@ pub enum XlibError {
 
     #[error("no font loaded")]
     NoFontLoaded,
+
+    #[error(transparent)]
+    WindowError(#[from] WindowError),
 
     #[error(transparent)]
     XrbConnectioError(#[from] x11rb::errors::ConnectionError),

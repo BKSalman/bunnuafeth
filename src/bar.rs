@@ -10,7 +10,8 @@ use x11rb::{
     COPY_DEPTH_FROM_PARENT,
 };
 
-use crate::{wm::WM, WindowState, WindowType, XlibError, BAR_HEIGHT, RGBA};
+use crate::{wm::WM, WindowState, WindowType, XlibError, RGBA};
+pub const BAR_HEIGHT: u16 = 30;
 
 pub struct Bar<'a, C: Connection> {
     pub window: Option<Window>,
@@ -187,8 +188,8 @@ impl<'a, C: Connection> WM<'a, C> {
             //         }],
             //     )?
             //     .check()?;
-            if let Some(fw_state) = &self.focused_window {
-                let reply = self
+            if let Some(fw_state) = self.windows.focused() {
+                let _reply = self
                     .conn_wrapper
                     .connection
                     .get_property(
