@@ -288,25 +288,23 @@ impl<'a, C: Connection> WM<'a, C> {
     }
 
     fn handle_unmap_notify(&mut self, event: UnmapNotifyEvent) -> Result<(), XlibError> {
-        if self.windows.get_window(event.window).is_some() {
+        if let Some((_, removed_win_state)) = self.windows.remove_window(event.window) {
             let root = self.screen().root;
             self.unfocus()?;
 
-            if let Some((_, removed_win_state)) = self.windows.remove_window(event.window) {
-                self.conn_wrapper
-                    .connection
-                    .change_save_set(SetMode::DELETE, removed_win_state.window)
-                    .unwrap();
-                self.conn_wrapper
-                    .connection
-                    .reparent_window(
-                        removed_win_state.window,
-                        root,
-                        removed_win_state.x,
-                        removed_win_state.y,
-                    )
-                    .unwrap();
-            }
+            self.conn_wrapper
+                .connection
+                .change_save_set(SetMode::DELETE, removed_win_state.window)
+                .unwrap();
+            self.conn_wrapper
+                .connection
+                .reparent_window(
+                    removed_win_state.window,
+                    root,
+                    removed_win_state.x,
+                    removed_win_state.y,
+                )
+                .unwrap();
 
             let screen = self.screen();
 
@@ -317,28 +315,38 @@ impl<'a, C: Connection> WM<'a, C> {
             ) {
                 self.apply_layout_diff(new_windows)?;
             }
-        }
-
-        if self
-            .windows
-            .unmanaged_windows()
-            .iter()
-            .find(|w| matches!(w.r#type, WindowType::Dock(_)))
-            .is_none()
+        } else if let Some(removed_unmanaged_win_state) =
+            self.windows.remove_unmanaged_window(event.window)
         {
-            self.layout_manager.reserved = ReservedEdges::default();
+            if matches!(removed_unmanaged_win_state.r#type, WindowType::Dock(_)) {
+                if let Some(other_dock) = self
+                    .windows
+                    .unmanaged_windows()
+                    .iter()
+                    .find(|w| matches!(w.r#type, WindowType::Dock(_)))
+                {
+                    match &other_dock.r#type {
+                        WindowType::Dock(reserved) => {
+                            self.layout_manager.reserved = reserved.clone();
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    self.layout_manager.reserved = ReservedEdges::default();
 
-            let screen = self.screen();
+                    return Ok(());
+                }
 
-            if let Some(new_windows) = self.layout_manager.calculate_dimensions(
-                self.windows.windows(),
-                screen.width_in_pixels,
-                screen.height_in_pixels,
-            ) {
-                self.apply_layout_diff(new_windows)?;
+                let screen = self.screen();
+
+                if let Some(new_windows) = self.layout_manager.calculate_dimensions(
+                    self.windows.windows(),
+                    screen.width_in_pixels,
+                    screen.height_in_pixels,
+                ) {
+                    self.apply_layout_diff(new_windows)?;
+                }
             }
-
-            return Ok(());
         }
 
         for bar in self.windows.windows().iter() {

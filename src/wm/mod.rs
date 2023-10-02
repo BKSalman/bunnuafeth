@@ -368,7 +368,8 @@ impl<'a, C: Connection> WM<'a, C> {
                 screen.root,
                 self.conn_wrapper.atoms._NET_NUMBER_OF_DESKTOPS,
                 AtomEnum::CARDINAL,
-                &[0],
+                // TODO: change this when tags are added
+                &[1],
             )?
             .check()?;
 

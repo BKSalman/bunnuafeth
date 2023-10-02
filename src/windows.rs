@@ -51,6 +51,18 @@ impl Windows {
 
         None
     }
+    /// removes an unmanaged window and shifts all windows that follow it
+    pub fn remove_unmanaged_window(&mut self, window_handle: WindowHandle) -> Option<WindowState> {
+        if let Some(win_position) = self
+            .unmanaged_windows
+            .iter()
+            .position(|w| w.window == window_handle)
+        {
+            Some(self.unmanaged_windows.remove(win_position))
+        } else {
+            None
+        }
+    }
     /// gets the next window, and wraps around if the provided window is at `self.windows.len() - 1`
     pub fn next_window(
         &self,
